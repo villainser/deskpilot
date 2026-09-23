@@ -89,9 +89,15 @@ function M.new(api, ctx)
     local function valid()
       if type(api.eventtap.isSecureInputEnabled) == 'function' and api.eventtap.isSecureInputEnabled() == true then return false end
       if guard.tap and type(guard.tap.isEnabled) == 'function' and guard.tap:isEnabled() ~= true then return false end
-      return guard.active and ctx.generation() == guard.generation and not ctx.blocked()
+      local currentTime = now()
+      local ownSpaceSwitch = guard.gotoSent == true and guard.followStartedAt ~= nil
+        and currentTime >= guard.followStartedAt and currentTime - guard.followStartedAt < 2
+      -- gotoSpace returns when AXPress starts the transition; its own Mission
+      -- Control can still be closing. The adapter may ignore only that MC
+      -- state, never lock/pause/input/startup protection, during this bounded poll.
+      return guard.active and ctx.generation() == guard.generation and not ctx.blocked(ownSpaceSwitch)
         and not buttonsDown() and sameWindow(window) and ctx.managed(window) == true
-        and now() >= guard.startedAt and now() - guard.startedAt < 12
+        and currentTime >= guard.startedAt and currentTime - guard.startedAt < 12
     end
     local function liveTarget()
       local target = guard.target

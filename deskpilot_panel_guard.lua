@@ -1,7 +1,7 @@
 -- Only the main frame of this local panel may invoke native actions.
 local M = {}
 local actions = { ready=true, close=true, pause=true, resume=true, settings=true,
-  missionControl=true, switch=true, move=true, rename=true, selectMonitor=true,
+  missionControl=true, switch=true, move=true, rename=true, selectMonitor=true, organize=true, toggleFollow=true,
   enablePreviews=true, disablePreviews=true, selectSpace=true, selectWindow=true, refreshPreview=true }
 local needsID = { switch=true, move=true, rename=true, selectMonitor=true,
   selectSpace=true, selectWindow=true, refreshPreview=true }

@@ -1350,6 +1350,11 @@ local function chromeProfilesMenu()
   return items
 end
 
+local function organizeNow(window)
+  if workspacePanel then workspacePanel:hide() end
+  return manager:organize(window)
+end
+
 local function menuItems()
   applyWorkspaceNames()
   local workspace = currentWorkspace()
@@ -1360,6 +1365,10 @@ local function menuItems()
     { title = manager and (manager.paused and "Wznow automatyke" or "Wstrzymaj automatyke") or "Automatyka",
       fn = function() if manager.paused then manager:resume() else manager:pause() end end },
     { title = "Usun puste, nieaktywne biurka", fn = function() manager:cleanup() end },
+    { title = "Organizuj teraz — rozdziel aplikacje i profile", disabled = manager.paused or manager.busy or manager.organizing,
+      fn = function() organizeNow() end },
+    { title = "Podążaj za nowym oknem", checked = manager.followEnabled,
+      fn = function() manager:setFollowEnabled(not manager.followEnabled) end },
     { title = "Profile Chrome — osobne biurka", menu = chromeProfilesMenu() },
     { title = "Pamięć układu i start programów", menu = {
       { title = manager.session and "Przywracanie po zalogowaniu: włączone"
@@ -1607,6 +1616,15 @@ manager = require("deskpilot_manager").new({
     return manager and manager.preferredSessionScreen and manager.preferredSessionScreen(window, rule)
   end,
   prepareFollow = function(window) return windowFollow and windowFollow:begin(window) end,
+  organized = function(window, workspace)
+    local rule = existingRuleForWindow(window)
+    if rule then
+      setRuleTarget(rule, workspace)
+      rule.allowShared = false
+      rule.manualMonitorSessionID = manager.sessionToken
+      saveUserRules(); saveDockedRules()
+    end
+  end,
   layoutAdopted = function(movedSpaces)
     local changed = false
     for _, moved in ipairs(movedSpaces) do
@@ -1688,7 +1706,7 @@ if not savedSession then manager.lastError = sessionError end
 manager:configureFollowSession(manager.sessionToken)
 windowFollow = require('deskpilot_follow').new(hs, {
   managed = windowShouldBeManaged,
-  blocked = function() return manager:followBlocked() end,
+  blocked = function(ownSpaceSwitch) return manager:followBlocked(ownSpaceSwitch) end,
   generation = function() return manager.generation end,
   resolve = function(target)
     applyWorkspaceNames()
@@ -1732,6 +1750,8 @@ workspacePanel = require("deskpilot_panel").new({
   status = function() return manager:status() end,
   pause = function() manager:pause() end,
   resume = function() manager:resume() end,
+  toggleFollow = function() manager:setFollowEnabled(not manager.followEnabled) end,
+  organize = organizeNow,
   switch = function(workspace) goToWorkspace(workspace.id) end,
   move = function(window, workspace) manager:manualMove(window, workspace) end,
   rename = renameWorkspace,
@@ -1783,9 +1803,9 @@ _G.DeskPilot = {
   sessionStatus = function() return manager.session and manager.session:status() end,
   saveLayout = function() return manager.session and manager.session:saveNow() end,
   restoreLayout = function() return manager.session and manager.session:requestRestore() end,
-  arrange = function()
-    for _, window in ipairs(manager:allWindows()) do manager:enqueue(window, true) end
-  end,
+  arrange = organizeNow,
+  organize = organizeNow,
+  setFollowEnabled = function(enabled) return manager:setFollowEnabled(enabled) end,
 }
 
 startWorkspaceShortcutTap()

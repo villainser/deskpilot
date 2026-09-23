@@ -70,7 +70,7 @@ local function fixture(options)
       return image
     end },
   }
-  e.panel = Panel.new({
+  e.context = {
     workspaces = function()
       local spaces = {}
       for index=1,(options.spaces or 1) do
@@ -93,7 +93,8 @@ local function fixture(options)
     label = function() return 'Chrome · nierozpoznany profil' end,
     previewAllowed = function(window) return window:application() ~= nil end,
     status = function() return e.status end,
-  })
+  }
+  e.panel = Panel.new(e.context)
   e.panel.visible, e.panel.ready, e.panel.preferredMonitor = true, true, 'monitor'
   e.panel.view={hide=function() end,evaluateJavaScript=function(_,script,callback)
     e.scripts[#e.scripts+1]=script
@@ -278,6 +279,115 @@ test('gallery returns explicit protected state without capturing password manage
   local e=fixture({bundle='com.bitwarden.desktop',ax=true})
   e.panel:refresh(); e.panel:startGallery(); e:advance(0.2)
   equal(#e.captures,0); equal(e.patches[1].protected,true)
+end)
+
+local function installActionBridge(e)
+  hs.configdir = directory .. '..'
+  e.actions, e.alerts = { organize = 0, toggleFollow = 0, pause = 0 }, {}
+  hs.alert = { show = function(message) e.alerts[#e.alerts + 1] = message end }
+  hs.printf = function() end
+  local view = e.panel.view
+  for _, method in ipairs({ 'windowStyle', 'behaviorAsLabels', 'level', 'shadow', 'transparent',
+      'allowTextEntry', 'allowNewWindows', 'deleteOnClose', 'windowTitle', 'policyCallback', 'windowCallback', 'html' }) do
+    view[method] = function(self) return self end
+  end
+  hs.webview = {
+    usercontent = { new = function()
+      return { setCallback = function(self, callback) e.callback = callback; return self end }
+    end },
+    new = function() return view end,
+  }
+  hs.drawing = { windowLevels = { floating = 1 } }
+  hs.eventtap = { event = { types = { leftMouseDown = 1, rightMouseDown = 2, keyDown = 3 } },
+    new = function() return { start = function(self) return self end, stop = function() end } end }
+  hs.caffeinate.watcher = { screensDidLock = 'lock', new = function()
+    return { start = function(self) return self end, stop = function() end }
+  end }
+  e.context.toggleFollow = function()
+    e.actions.toggleFollow = e.actions.toggleFollow + 1
+    e.status.followNewWindows = not e.status.followNewWindows
+  end
+  e.context.organize = function(sourceWindow)
+    e.actions.organize = e.actions.organize + 1
+    e.organizeSource = sourceWindow
+    e.status.organizing, e.status.organizePlanned, e.status.organizeDone = true, 2, 0
+  end
+  e.context.pause = function()
+    e.actions.pause = e.actions.pause + 1
+    e.status.paused, e.status.organizing = true, false
+  end
+  e.panel:create({ x = 0, y = 0, w = 700, h = 860 })
+  function e:send(action)
+    self.callback({ name = 'deskpilot', webView = self.panel.view,
+      frameInfo = { mainFrame = true, request = { URL = 'about:blank' } }, body = { action = action } })
+    equal(self.panel.lastError, nil, 'bridge action must complete without an exception')
+  end
+end
+
+test('the follow preference action works while paused and updates status without captures or scans', function()
+  local e = fixture()
+  installActionBridge(e)
+  e.status.paused, e.status.followNewWindows = true, true
+  e.panel:refresh()
+  local scans, captures = e.metadataCalls, #e.captures
+  e:send('toggleFollow')
+  equal(e.actions.toggleFollow, 1); equal(e.status.followNewWindows, false)
+  assert(e.scripts[#e.scripts]:find('followNewWindows=false', 1, true))
+  assert(e.scripts[#e.scripts]:find('DeskPilotPanel.updateStatus', 1, true))
+  equal(e.metadataCalls, scans); equal(#e.captures, captures); equal(e.actions.organize, 0)
+  e:send('toggleFollow')
+  equal(e.status.followNewWindows, true); equal(e.actions.toggleFollow, 2)
+end)
+
+test('organization is an explicit action and its progress uses status-only updates', function()
+  local e = fixture({ ax = true })
+  installActionBridge(e)
+  e.panel.source = e.windows[1]
+  e.context.managed = function(window) return window == e.windows[1] end
+  e.panel:refresh(); e.panel:pollStatus()
+  equal(e.actions.organize, 0, 'opening or polling the panel must never organize desktops')
+  local scans, captures = e.metadataCalls, #e.captures
+  e:send('organize')
+  equal(e.actions.organize, 1)
+  equal(e.organizeSource, e.windows[1], 'organization receives the window focused before opening the panel')
+  assert(e.scripts[#e.scripts]:find('organizing=true', 1, true))
+  assert(e.scripts[#e.scripts]:find('organizePlanned=2', 1, true))
+  e:send('organize')
+  equal(e.actions.organize, 1, 'an in-progress organization cannot be launched twice')
+  e.status.organizeDone = 1; e.panel:pollStatus()
+  assert(e.scripts[#e.scripts]:find('organizeDone=1', 1, true))
+  e.status.organizing, e.status.organizeMessage = false, 'Biurka są już rozdzielone.'
+  e.panel:pollStatus()
+  assert(e.scripts[#e.scripts]:find('organizeMessage=Biurka są już rozdzielone.', 1, true))
+  equal(e.metadataCalls, scans); equal(#e.captures, captures)
+end)
+
+test('organization refuses paused or unstable state while pause can cancel active organization', function()
+  for _, key in ipairs({ 'paused', 'busy', 'missionControl', 'locked', 'settling', 'organizing', 'sessionPhase' }) do
+    local e = fixture()
+    installActionBridge(e)
+    e.status[key] = key == 'sessionPhase' and 'restoring' or true
+    e:send('organize')
+    equal(e.actions.organize, 0, key .. ' must block organization')
+    equal(#e.alerts, 1)
+  end
+  local e = fixture()
+  installActionBridge(e)
+  e.status.organizing = true
+  e:send('pause')
+  equal(e.actions.pause, 1); equal(e.status.paused, true); equal(e.status.organizing, false)
+end)
+
+test('hidden or locked panels cannot start organization or change the follow preference', function()
+  for _, blocked in ipairs({ 'hidden', 'locked' }) do
+    for _, action in ipairs({ 'organize', 'toggleFollow' }) do
+      local e = fixture()
+      installActionBridge(e)
+      if blocked == 'hidden' then e.panel.visible = false else e.locked = true end
+      e:send(action)
+      equal(e.actions.organize, 0); equal(e.actions.toggleFollow, 0)
+    end
+  end
 end)
 
 print(string.format('%d panel snapshot tests passed', passed))

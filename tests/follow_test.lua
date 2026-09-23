@@ -68,12 +68,16 @@ local function fixture()
         if e.gotoMode=='error' then error('goto failed') end
         if e.gotoMode=='fail' then return nil end
         if e.gotoMode=='switch' then e.active[e.target.screenUUID]=id end
+        if e.gotoMode=='async-switch' then
+          e.missionControl=true
+          e.api.timer.doAfter(.25,function() e.missionControl=false; e.active[e.target.screenUUID]=id end)
+        end
         return true
       end,
     },
   }
   e.ctx={
-    blocked=function() return e.blocked end,
+    blocked=function(ownSpaceSwitch) return e.blocked or (e.missionControl and not ownSpaceSwitch) end,
     generation=function() return e.generation end,
     managed=function(candidate) return candidate==e.window and not e.unmanaged end,
     resolve=function(target)
@@ -280,6 +284,27 @@ end)
 test('Secure Input during polling cancels before the goto fallback', function()
   local e=fixture(); e.focusMode='none'; local guard=e:arm(); assert(guard:complete(e.target))
   e.secureInput=true; e:advance(.4)
+  equal(e.focusCalls,1); equal(#e.gotoCalls,0); e:clean()
+end)
+
+test('own goto transition can finish closing Mission Control before verified final focus', function()
+  local e=fixture(); e.focusMode='active-only'; e.gotoMode='async-switch'; local guard=e:arm()
+  assert(guard:complete(e.target)); e:advance(.31)
+  equal(#e.gotoCalls,1); equal(e.missionControl,true); equal(e.focusCalls,1); equal(e:liveTaps(),1)
+  e:advance(.4); equal(e.active.a,2); equal(e.active.b,5)
+  equal(e.focusCalls,2); equal(e.focused,e.window); equal(#e.gotoCalls,1); e:clean()
+end)
+
+test('own Mission Control exception still cancels for lock or pause during the transition', function()
+  local e=fixture(); e.focusMode='active-only'; e.gotoMode='async-switch'; local guard=e:arm()
+  assert(guard:complete(e.target)); e:advance(.31); equal(e.missionControl,true)
+  e.blocked=true; e:advance(.4)
+  equal(e.focusCalls,1); equal(#e.gotoCalls,1); e:clean()
+end)
+
+test('Mission Control opened before our fallback remains a user interruption', function()
+  local e=fixture(); e.focusMode='none'; local guard=e:arm()
+  assert(guard:complete(e.target)); e.missionControl=true; e:advance(.4)
   equal(e.focusCalls,1); equal(#e.gotoCalls,0); e:clean()
 end)
 

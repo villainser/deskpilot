@@ -2,6 +2,7 @@
 local policy = require('deskpilot_policy')
 local Births = require('deskpilot_births')
 local Wire = require('deskpilot_wire')
+local Organize = require('deskpilot_organize')
 local M = {}
 
 function M.new(ctx)
@@ -9,7 +10,8 @@ function M.new(ctx)
     reserved = {}, emptySince = {}, guardUntil = 0, lastError = nil, topology = nil,
     cleanupEnabled = true, lastCleanup = 0, generation = 0, timers = {},
     layoutRevision = 0, layoutGuardUntil = 0, missionControl = false, locked = false, births = Births.new(),
-    inputSerial = 0, followQuietUntil = 0 }
+    inputSerial = 0, followQuietUntil = 0,
+    followEnabled = hs.settings.get('deskpilot.followNewWindows.v1') ~= false }
   local now = hs.timer.secondsSinceEpoch
   local spaces = hs.spaces
   local function later(delay, fn)
@@ -49,9 +51,32 @@ function M.new(ctx)
     for _, down in pairs(hs.eventtap.checkMouseButtons()) do if down then return true end end
     return false
   end
-  function self:noteUserInput()
+  function self:noteUserInput(event)
     -- Only timing is retained; no keys, text or click positions are recorded.
     self.lastUserInputAt, self.inputSerial = now(), self.inputSerial + 1
+    -- Typing in the newly opened window while it waits in our queue is still
+    -- working with that window. Navigation/clicks and input after moving starts
+    -- retain the stricter cancellation rules of the follow guard.
+    local types = hs.eventtap.event and hs.eventtap.event.types
+    if event and types and event:getType() == types.keyDown then
+      local focused = hs.window.focusedWindow()
+      local app = focused and focused:application()
+      for _, item in ipairs(self.queue) do
+        local intent = item.follow
+        if intent and intent.inputSerial == self.inputSerial - 1 and app
+            and intent.id == focused:id() and intent.pid == app:pid() then
+          intent.inputSerial = self.inputSerial
+        end
+      end
+    end
+  end
+  function self:setFollowEnabled(enabled)
+    self.followEnabled = enabled == true
+    hs.settings.set('deskpilot.followNewWindows.v1', self.followEnabled)
+    if not self.followEnabled then
+      for _, item in ipairs(self.queue) do item.follow = nil end
+    end
+    return self.followEnabled
   end
   function self:configureFollowSession(sessionID)
     if type(sessionID) ~= 'string' or sessionID == '' then
@@ -75,20 +100,22 @@ function M.new(ctx)
       and app and focusedApp and app:pid() == focusedApp:pid()
   end
   local function followIntent(window)
-    if not ctx.prepareFollow or self.paused or now() < self.followQuietUntil
+    if not ctx.prepareFollow or not self.followEnabled or self.paused or now() < self.followQuietUntil
         or not self.lastUserInputAt or now() - self.lastUserInputAt > 10
-        or now() < self.lastUserInputAt or not focusedIdentity(window) then return nil end
+        or now() < self.lastUserInputAt then return nil end
+    local focused = hs.window.focusedWindow()
+    if focused and focused:id() == window:id() and not focusedIdentity(window) then return nil end
     local app = window:application()
     return { id = window:id(), pid = app:pid(), key = appKey(window),
-      generation = self.generation, inputSerial = self.inputSerial, time = now() }
+      generation = self.generation, inputSerial = self.inputSerial, time = now(), focused = focusedIdentity(window) }
   end
-  local function validFollow(window, intent)
+  local function validFollow(window, intent, awaitingFocus)
     local app = window and window:application()
-    return intent and app and not self.paused and not self.shuttingDown
+    return intent and app and self.followEnabled and not self.paused and not self.shuttingDown
       and now() >= self.followQuietUntil and now() >= intent.time and now() - intent.time < 10
       and intent.id == window:id() and intent.pid == app:pid() and intent.key == appKey(window)
       and intent.generation == self.generation and intent.inputSerial == self.inputSerial
-      and focusedIdentity(window)
+      and (awaitingFocus or focusedIdentity(window))
   end
   local function screenSignature()
     local ids = {}
@@ -122,6 +149,7 @@ function M.new(ctx)
     if changed then
       self.locked = locked
       if locked then
+        self:finishOrganization('Organizowanie przerwane po zablokowaniu Maca.')
         if self.sessionCreateToken then self.sessionCreateToken = nil; self.busy = false end
         if self.cleanupBatch then self:cancelCleanup('locked') end
         self.generation = self.generation + 1
@@ -247,9 +275,10 @@ function M.new(ctx)
     hs.printf('DeskPilot: %s', message)
     hs.alert.show('DeskPilot: ' .. message)
   end
-  function self:followBlocked()
-    return self.shuttingDown or self:checkSessionLock() or self.paused
-      or now() < self.followQuietUntil or mouseDown() or missionControlVisible()
+  function self:followBlocked(ownSpaceSwitch)
+    return not self.followEnabled or self.organizing or self.shuttingDown or self:checkSessionLock() or self.paused
+      or now() < self.followQuietUntil or mouseDown()
+      or (not ownSpaceSwitch and missionControlVisible())
   end
   function self:allWindows() return windows() end
   function self:enqueue(window, allowAutoDock, intent)
@@ -514,6 +543,12 @@ function M.new(ctx)
     if self:checkSessionLock() or not ctx.managed(window) then return end
     if self.session and self.session:claims(appKey(window)) then return end
     if missionControlVisible() then self:enqueue(window, allowAutoDock, intent); return end
+    -- WindowServer can report a new Chrome window before Accessibility reports
+    -- its focus. Give that same birth a short chance to become foreground.
+    if validFollow(window, intent, true) and not intent.focused
+        and not focusedIdentity(window) and now() - intent.time < 1.5 then
+      self:enqueue(window, allowAutoDock, intent); return
+    end
     -- Sticky and fullscreen windows are user exceptions, never forced apart.
     if not location(window) then stamp(window); return end
     local rule = ctx.rule(window)
@@ -537,7 +572,19 @@ function M.new(ctx)
       armFollow()
       local accepted = self:move(window, target, false, function(ok)
         if follow then
-          if ok then follow:complete(target) else cancelFollow() end
+          if not ok then cancelFollow(); return end
+          local waitStarted, generation = now(), self.generation
+          local function completeWhenClosed()
+            if not follow then return end
+            if generation ~= self.generation then cancelFollow(); return end
+            -- Our own Space creation can still be closing Mission Control
+            -- when native movement confirms. The guard keeps watching input.
+            if missionControlVisible() and now() - waitStarted < 1.5 then
+              later(.1, completeWhenClosed); return
+            end
+            follow:complete(target)
+          end
+          completeWhenClosed()
         end
       end)
       if not accepted then cancelFollow() end
@@ -572,6 +619,7 @@ function M.new(ctx)
   function self:manualMove(window, ws)
     if self:checkSessionLock() then return end
     if self.busy then report('poczekaj na zakonczenie ruchu okna'); return end
+    self:finishOrganization('Przerwano ręcznym przeniesieniem.')
     if self.session then self.session:cancelGroup(appKey(window)) end
     return self:move(window, ws, true, function(ok)
       if ok then
@@ -610,8 +658,195 @@ function M.new(ctx)
     table.sort(ids)
     return table.concat(ids, '|') == topology
   end
+  function self:finishOrganization(message)
+    if not self.organization then return end
+    self.organizing, self.organization = false, nil
+    self.organizeMessage = message or ('Rozdzielono grupy: ' .. tostring(self.organizeDone or 0) .. '.'
+      .. ((self.organizeSkipped or 0) > 0 and ' Pominięto grupy z niedostępnymi oknami; odwiedź ich biurka i spróbuj ponownie.' or ''))
+    hs.alert.show('DeskPilot: ' .. self.organizeMessage)
+  end
+  function self:organize(focusedWindow)
+    if self.organizing then return false end
+    if self:checkSessionLock() or self.paused or self.shuttingDown or self.busy
+        or self.cleaning or missionControlVisible() or now() < self.guardUntil
+        or (self.session and self.session:isRestoring())
+        or spaces.screensHaveSeparateSpaces() ~= true then
+      self.organizeMessage = 'Organizowanie niedostępne: wznów automatykę i poczekaj na zakończenie bieżącej operacji.'
+      hs.alert.show('DeskPilot: ' .. self.organizeMessage); return false
+    end
+    local list, topology = ctx.workspaces(), screenSignature()
+    if not validCleanupSnapshot(list, topology) then return false end
+    local byID, occupied = {}, self:occupancy()
+    for _, ws in ipairs(list) do
+      if occupied[ws.spaceID] == nil then
+        self.organizeMessage = 'Poczekaj na pełny odczyt biurek i spróbuj ponownie.'
+        hs.alert.show('DeskPilot: ' .. self.organizeMessage); return false
+      end
+      byID[ws.spaceID] = ws
+    end
+    local rows, references, plainPIDs, spaceGroups = {}, {}, {}, {}
+    for _, window in ipairs(windows()) do
+      local app = window:application()
+      local ws = byID[location(window)]
+      if app and ws and ctx.managed(window) then
+        local key, id = appKey(window), window:id()
+        rows[#rows + 1] = {key = key, id = id, pid = app:pid(), spaceID = ws.spaceID,
+          screenUUID = ws.screenUUID, spaceUUID = ws.spaceUUID}
+        references[id] = window
+        if key then
+          spaceGroups[ws.spaceID] = spaceGroups[ws.spaceID] or {}
+          spaceGroups[ws.spaceID][key] = true
+          if not ctx.isGroupedApplication or not ctx.isGroupedApplication(window) then plainPIDs[app:pid()] = key end
+        end
+      end
+    end
+    local focused = focusedWindow or hs.window.focusedWindow()
+    local plan = Organize.plan(rows, focused and appKey(focused))
+    local unavailable = {}
+    local raw = self.metadataAt and now() - self.metadataAt < 5 and self.metadata or hs.window.list(true)
+    for _, item in pairs(raw or {}) do
+      local id, pid = item.kCGWindowNumber, item.kCGWindowOwnerPID
+      if item.kCGWindowLayer == 0 and not references[id] then
+        local prior = self.observed[id]
+        local known = ctx.groupKeyForWindowID and ctx.groupKeyForWindowID(id, pid)
+          or (prior and prior.pid == pid and prior.app) or plainPIDs[pid]
+        if known then unavailable[known] = true end
+      end
+    end
+    self.organizeSkipped = 0
+    for i = #plan.groups, 1, -1 do
+      if unavailable[plan.groups[i].key] then
+        table.remove(plan.groups, i); self.organizeSkipped = self.organizeSkipped + 1
+      end
+    end
+    plan.groupCount = #plan.groups
+    self.organizePlanned, self.organizeDone = plan.groupCount, 0
+    if plan.groupCount == 0 then
+      self.organizeMessage = self.organizeSkipped > 0
+        and 'Brakuje dostępu do części okien. Odwiedź ich biurka i uruchom organizowanie ponownie.'
+        or 'Rozpoznane aplikacje i profile Chrome są już rozdzielone.'
+      hs.alert.show('DeskPilot: ' .. self.organizeMessage); return true
+    end
+    -- Explicit organization overrides sharing for the selected groups only.
+    -- It does not turn on continuous rearrangement or launch saved programs.
+    local affected = {}
+    for _, group in ipairs(plan.groups) do
+      affected[group.key] = true
+      if self.session then self.session:cancelGroup(group.key) end
+    end
+    -- The groups left in place on a shared desktop must not subsequently be
+    -- moved by an older pending restore of that same manually organized layout.
+    if self.session then
+      for _, keys in pairs(spaceGroups) do
+        local count, organizingSpace = 0, false
+        for key in pairs(keys) do count = count + 1; organizingSpace = organizingSpace or affected[key] end
+        if count > 1 and organizingSpace then
+          for key in pairs(keys) do self.session:cancelGroup(key) end
+        end
+      end
+    end
+    for i = #self.queue, 1, -1 do
+      local item = self.queue[i]
+      item.follow = nil
+      if affected[appKey(item.window)] then self.queued[item.id] = nil; table.remove(self.queue, i) end
+    end
+    self:cancelCleanup('organize')
+    self.organizeMessage = 'Rozdzielam aplikacje i profile Chrome…'
+    self.organizing = true
+    self.organization = {plan = plan.groups, index = 1, windowIndex = 1, windows = references,
+      generation = self.generation, topology = topology, inputSerial = self.inputSerial,
+      deadline = now() + math.min(180, math.max(30, #rows * 5 + plan.groupCount * 6))}
+    return true
+  end
+  function self:advanceOrganization()
+    local batch = self.organization
+    if not batch then return end
+    if self.paused or self:checkSessionLock() or self.shuttingDown
+        or batch.generation ~= self.generation or batch.topology ~= screenSignature()
+        or batch.inputSerial ~= self.inputSerial or now() >= batch.deadline then
+      self:finishOrganization('Organizowanie przerwane; wykonane ruchy pozostają.'); return
+    end
+    local group = batch.plan[batch.index]
+    if not group then self:finishOrganization(); return end
+    if not policy.resolve({spaceUUID = group.sourceSpaceUUID, screenUUID = group.sourceScreenUUID}, ctx.workspaces()) then
+      self:finishOrganization('Źródłowe biurko zmieniło monitor lub zostało usunięte.'); return
+    end
+    local row = group.windows[batch.windowIndex]
+    local window = row and batch.windows[row.id]
+    local app = window and window:application()
+    local source = row and policy.resolve(row, ctx.workspaces())
+    if not window or window:id() ~= row.id or not app or app:pid() ~= row.pid
+        or not ctx.managed(window) or appKey(window) ~= group.key or not source
+        or location(window) ~= source.spaceID then
+      self:finishOrganization('Układ okien zmienił się. Uruchom organizowanie ponownie.'); return
+    end
+    local target
+    if batch.target then
+      target = policy.resolve(batch.target, ctx.workspaces())
+      if not target or target.screenUUID ~= group.sourceScreenUUID then
+        self:finishOrganization('Docelowe biurko zmieniło się.'); return
+      end
+    else
+      local occupied = self:occupancy(window)
+      local excluded = {[group.sourceSpaceID] = true}
+      for id in pairs(self.reserved) do excluded[id] = true end
+      target = policy.firstFree(ctx.workspaces(), group.sourceScreenUUID, occupied, excluded)
+      if not target then
+        for _, ws in ipairs(ctx.workspaces()) do
+          if ws.screenUUID == group.sourceScreenUUID and occupied[ws.spaceID] == nil then return end
+        end
+        local screen = screenPresent(group.sourceScreenUUID)
+        if not screen then self:finishOrganization('Monitor został odłączony.'); return end
+        local before = {}
+        for _, ws in ipairs(ctx.workspaces()) do before[ws.spaceUUID] = true end
+        self.busy = true
+        local ok = spaces.addSpaceToScreen(screen)
+        if not ok then self.busy = false; self:finishOrganization('Nie udało się utworzyć biurka.'); return end
+        later(.6, function()
+          self.busy = false
+          if self.organization ~= batch or batch.generation ~= self.generation then return end
+          ctx.refresh()
+          local updated, added = ctx.workspaces(), {}
+          if not validCleanupSnapshot(updated, batch.topology) then
+            self:finishOrganization('Niepełny odczyt po utworzeniu biurka.'); return
+          end
+          for _, ws in ipairs(updated) do
+            if ws.screenUUID == group.sourceScreenUUID and not before[ws.spaceUUID] then added[#added + 1] = ws end
+          end
+          if #added == 1 then
+            batch.target = {spaceID = added[1].spaceID, spaceUUID = added[1].spaceUUID, screenUUID = added[1].screenUUID}
+            batch.createdAt = now(); return
+          end
+          self:finishOrganization('Nowe biurko nie zostało potwierdzone.')
+        end)
+        return
+      end
+      batch.target = {spaceID = target.spaceID, spaceUUID = target.spaceUUID, screenUUID = target.screenUUID}
+    end
+    if batch.createdAt and now() - batch.createdAt < 3 then return end
+    local available = self:occupancy(window)[target.spaceID]
+    if available == nil then return end
+    if available ~= false then self:finishOrganization('Docelowe biurko zostało zajęte.'); return end
+    local accepted = self:move(window, target, false, function(ok)
+      if self.organization ~= batch then return end
+      if batch.inputSerial ~= self.inputSerial or batch.generation ~= self.generation
+          or batch.topology ~= screenSignature() then
+        self:finishOrganization('Organizowanie przerwane; wykonane ruchy pozostają.'); return
+      end
+      if not ok then self:finishOrganization('Nie potwierdzono przeniesienia okna.'); return end
+      if ctx.organized then ctx.organized(window, target) end
+      batch.windowIndex = batch.windowIndex + 1
+      if batch.windowIndex > #group.windows then
+        self.organizeDone = self.organizeDone + 1
+        batch.index, batch.windowIndex = batch.index + 1, 1
+        batch.target, batch.createdAt = nil, nil
+        if batch.index > #batch.plan then self:finishOrganization() end
+      end
+    end)
+    if not accepted then self:finishOrganization('Nie można teraz przenieść okna.') end
+  end
   function self:cleanup()
-    if self.shuttingDown or (self.session and self.session:isRestoring()) then return end
+    if self.organizing or self.shuttingDown or (self.session and self.session:isRestoring()) then return end
     if self:checkSessionLock() or self.paused or self.busy or now() < self.guardUntil or now() < self.layoutGuardUntil
         or mouseDown() or missionControlVisible() or #self.queue > 0 or spaces.screensHaveSeparateSpaces() ~= true then return end
     local list = ctx.workspaces()
@@ -773,6 +1008,7 @@ function M.new(ctx)
   function self:topologyChanged()
     local locked, changed = self:checkSessionLock()
     if locked or changed then return end -- Unlock already established its new baseline.
+    self:finishOrganization('Przerwano po zmianie monitorów.')
     if self.sessionCreateToken then self.sessionCreateToken = nil; self.busy = false end
     self.screenGeometry = screenGeometrySignature() or self.screenGeometry
     self:cancelCleanup('topology-changed')
@@ -803,7 +1039,12 @@ function M.new(ctx)
     -- Mission Control does not emit a Space-switch event for every reorder.
     -- Poll native identity/order even when paused or while a move is finishing.
     self:observeLayout(interacting)
+    if self.organizing and (self.organization.inputSerial ~= self.inputSerial
+        or self.organization.generation ~= self.generation or self.organization.deadline <= now()) then
+      self:finishOrganization('Przerwano organizowanie po interakcji lub upływie czasu.')
+    end
     if interacting or now() < self.guardUntil or now() < self.layoutGuardUntil or self.busy then return end
+    if self.organizing then self:advanceOrganization(); return end
     local learningMove = false
     for _, window in ipairs(windows()) do
       if ctx.managed(window) then
@@ -849,7 +1090,8 @@ function M.new(ctx)
           local intent = followIntent(window)
           if intent and self.session and self.session:claims(key) then
             if self.session:isAutoLaunchPending(key) then intent = nil
-            else self.session:cancelGroup(key) end
+            elseif focusedIdentity(window) then self.session:cancelGroup(key)
+            else intent = nil end
           end
           self:enqueue(window, true, intent)
         end
@@ -888,6 +1130,7 @@ function M.new(ctx)
   function self:pause()
     if self.sessionCreateToken then self.sessionCreateToken = nil; self.busy = false end
     self:cancelCleanup('paused')
+    self:finishOrganization('Organizowanie wstrzymane.')
     self.paused = true
     self.generation = self.generation + 1
     self.queue, self.queued = {}, {}
@@ -903,8 +1146,10 @@ function M.new(ctx)
       cleanupPending = self.cleanupPending or 0, cleanupSkipped = self.cleanupSkipped or 0,
       metadataError = self.metadataError, metadataReads = self.metadataReads or 0,
       separateSpaces = spaces.screensHaveSeparateSpaces(),
-      placementMode = 'new-windows-only', automaticResize = false, automaticFocus = ctx.prepareFollow ~= nil,
-      followNewWindows = ctx.prepareFollow ~= nil, followStartupQuiet = now() < self.followQuietUntil,
+      placementMode = 'new-windows-only', automaticResize = false, automaticFocus = self.followEnabled and ctx.prepareFollow ~= nil,
+      followNewWindows = self.followEnabled and ctx.prepareFollow ~= nil, followStartupQuiet = now() < self.followQuietUntil,
+      organizing = self.organizing == true, organizePlanned = self.organizePlanned or 0,
+      organizeDone = self.organizeDone or 0, organizeMessage = self.organizeMessage,
       settling = now() < self.guardUntil or now() < self.layoutGuardUntil,
       missionControl = self.missionControl, layoutRevision = self.layoutRevision,
       layoutChangedAt = self.layoutChangedAt, layoutChange = self.layoutChange,
@@ -915,6 +1160,7 @@ function M.new(ctx)
     return status
   end
   function self:shutdown()
+    self:finishOrganization('Organizowanie przerwane przy zamykaniu systemu.')
     self.shuttingDown = true
     -- Keep the saved auto-start preference. An explicit resume can recover if
     -- macOS shutdown was cancelled by an application's unsaved-document prompt.
@@ -936,7 +1182,7 @@ function M.new(ctx)
     if hs.eventtap.new and hs.eventtap.event then
       local events = hs.eventtap.event.types
       self.inputWatcher = hs.eventtap.new({ events.leftMouseDown, events.rightMouseDown,
-        events.keyDown }, function() self:noteUserInput(); return false end):start()
+        events.keyDown }, function(event) self:noteUserInput(event); return false end):start()
     end
     self.filter:subscribe(hs.window.filter.windowCreated, function(window)
       if self:checkSessionLock() then return end
@@ -946,6 +1192,16 @@ function M.new(ctx)
       if ctx.forgetWindow and prior and app and prior.pid ~= app:pid() then ctx.forgetWindow(window:id()) end
       if not prior or (app and prior.pid ~= app:pid()) then stamp(window) end
       -- Native metadata and tick() decide whether this is genuinely new.
+    end)
+    self.filter:subscribe(hs.window.filter.windowFocused, function(window)
+      local app = window and window:application()
+      for _, item in ipairs(self.queue) do
+        local intent = item.follow
+        if intent then
+          if app and window:id() == intent.id and app:pid() == intent.pid then intent.focused = true
+          elseif intent.focused then item.follow = nil end
+        end
+      end
     end)
     self.screenGeometry = screenGeometrySignature()
     self.screenWatcher = hs.screen.watcher.new(function()

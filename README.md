@@ -46,6 +46,8 @@ Na komputerze testowym włączono start Hammerspoon przy logowaniu. Uprawnienie 
 | Kliknięcie `Desk:` lub `Ctrl+Alt+Space` | Pokaż/ukryj wysuwany panel biurek. |
 | `Option` + kliknięcie `Desk:` | Otwórz dotychczasowe menu ustawień i przypisań. |
 | Ikona suwaków na dole panelu | Otwórz to samo menu ustawień. |
+| Panel → `Organizuj teraz` | Jednorazowo rozdziel aplikacje i profile Chrome współdzielące biurka na wszystkich monitorach. |
+| Panel → `Podążaj za nowym oknem` | Włącz/wyłącz przechodzenie za świadomie otwartym nowym oknem. Preferencja jest zapamiętywana. |
 | `Ctrl+1…9`, `Ctrl+0`, `Ctrl+-` | Przełącz na biurko 1…11. |
 | `Ctrl+Shift+1…9/0/-` | Przenieś aktywne okno i zapamiętaj cel aplikacji. |
 | `Ctrl+Esc` | Pokaż/ukryj tę samą listę biurek z podglądami. |
@@ -61,13 +63,21 @@ W tabeli „Menu” oznacza menu ustawień otwierane przez `Option` + kliknięci
 
 ### Podążanie za nowym oknem
 
-Otwierasz program albo nowe okno profilu Chrome i pozostajesz w tym oknie: po automatycznym przydzieleniu do biurka DeskPilot przechodzi za nim, aby można było od razu pracować. Wymaga to potwierdzenia, że okno jest nowe, trafiło na pierwszym planie po niedawnej interakcji użytkownika i zostało poprawnie przeniesione. Chrome nadal ma **jedno biurko na profil**; kolejne okno trafia na biurko swojego profilu, a karty pozostają razem.
+Na dole panelu przełącznik **Podążaj za nowym oknem** trwale zapamiętuje Twój wybór, także po przeładowaniu i logowaniu. Wyłączenie podążania zachowuje przydzielanie nowych okien do biurek; pozostajesz w bieżącym miejscu.
 
-Kliknięcie, pisanie, wybór innego okna lub zmiana biurka w trakcie oczekiwania anuluje podążanie. Nie jest ono odkładane do późniejszego wykonania. Program otwarty w tle, zastane okna po reloadzie, przywracanie sesji i autostart zapisanych aplikacji nie wywołują takiego przejścia. Podczas uruchamiania systemu podążanie jest wyciszone, żeby odtwarzany układ nie przełączał kolejno biurek.
+Przy włączonym przełączniku otwierasz program albo nowe okno profilu Chrome i pozostajesz w tym oknie: po automatycznym przydzieleniu do biurka DeskPilot przechodzi za nim, aby można było od razu pracować. Wymaga to potwierdzenia, że okno jest nowe, trafiło na pierwszym planie po niedawnej interakcji użytkownika i zostało poprawnie przeniesione. Chrome nadal ma **jedno biurko na profil**; kolejne okno trafia na biurko swojego profilu, a karty pozostają razem.
+
+Kliknięcie, wybór innego okna lub zmiana biurka anuluje oczekujące podążanie. Pisanie w tym samym nowym oknie, zanim rozpocznie się ruch, zachowuje zamiar podążania; wejście użytkownika po rozpoczęciu ruchu nadal je anuluje. Nie jest ono odkładane do późniejszego wykonania. Program otwarty w tle, zastane okna po reloadzie, przywracanie sesji i autostart zapisanych aplikacji nie wywołują takiego przejścia. Podczas uruchamiania systemu podążanie jest wyciszone, żeby odtwarzany układ nie przełączał kolejno biurek.
 
 Po nowym logowaniu **pierwsza minuta jest bez podążania**, również za oknami na pierwszym planie. Zwykły reload nie rozpoczyna tej minuty od nowa i nie przywraca pominiętych przejść. Potem nadal wymagane jest dokładnie to nowe, aktywne okno i niedawna interakcja użytkownika.
 
 Ta funkcja obejmuje zarządzane zwykłe okna. Natywny pełny ekran, Split View, okna na wszystkich Spaces i nierozpoznany profil Chrome pozostają objęte dotychczasowymi wyjątkami; nie ma gwarancji przejęcia fokusu w każdym trybie macOS.
+
+### Organizuj teraz — jednorazowe rozdzielenie aplikacji
+
+Przycisk **Organizuj teraz** na dole panelu sprawdza wszystkie monitory. Na biurku współdzielonym przez różne aplikacje lub profile Chrome pozostawia jedną grupę, a pozostałe przenosi na wolne albo nowe biurka **tego samego monitora**. Wszystkie dostępne standardowe okna danej aplikacji albo rozpoznanego profilu Chrome pozostają razem. Nie jest to stała reguła rozbijająca ręcznie wspólne biurka — działa tylko po Twoim poleceniu.
+
+Organizowanie wymaga włączonej automatyki i zakończenia trwających zmian układu. Nie podąża za przenoszonymi oknami, również gdy przełącznik podążania jest włączony. Nowa interakcja użytkownika przerywa pozostałe operacje; możesz też użyć **Wstrzymaj**. Już wykonane ruchy pozostają. Panel pokazuje postęp lub wynik po ponownym otwarciu. Nierozpoznane okna pozostają na miejscu. Gdy system potwierdza istnienie niedostępnego okna rozpoznanej grupy, cała grupa jest pomijana; odwiedź jej biurka i ponów organizowanie.
 
 ### Pamięć ostatniej sesji i start programów
 
@@ -169,6 +179,7 @@ lua tests/chrome_adapter_test.lua
 lua tests/panel_model_test.lua
 lua tests/births_test.lua
 lua tests/follow_test.lua
+lua tests/organize_test.lua
 lua tests/previews_test.lua
 lua tests/panel_guard_test.lua
 lua tests/panel_snapshot_test.lua
@@ -197,7 +208,7 @@ Odczyt wewnętrzny `--windows-stream` w helperze 1.3.2 przenosi JSON jako ASCII 
 
 Zakres testów oraz dotychczasowa weryfikacja na macOS 26.6.2, Hammerspoon 1.1.1, dwóch zewnętrznych Dellach i ekranie laptopa (próby rzeczywiste 21–23.09.2026):
 
-- **430 testów w 15 zestawach przechodzi poprawnie.** Regresje obejmują nowe okna, profile Chrome, ręczną kolejność, podglądy, protokół danych, sprzątanie oraz rozróżnienie pustki od niepełnego odczytu.
+- **487 testów w 16 zestawach przechodzi poprawnie.** Regresje obejmują nowe okna, profile Chrome, ręczną kolejność, podglądy, protokół danych, sprzątanie oraz rozróżnienie pustki od niepełnego odczytu.
 - Pamięć sesji ma osobne testy walidacji zapisu, doboru monitorów, listy aktywnych aplikacji, zachowania geometrii, jednokrotnego przywracania i pierwszeństwa ręcznych zmian. Testy adaptera używają kontrolowanych zastępników API; nie zastępują próby restartu na rzeczywistych monitorach.
 - Kompilacja Objective-C z `-Wall -Wextra -Werror` i sprawdzenie składni Lua przeszły.
 - Tymczasowe okno TextEdit rzeczywiście przeniesiono między Spaces/monitorami i z powrotem; sprawdzono docelowe ID zarówno w helperze, jak i w Hammerspoon.

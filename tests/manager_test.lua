@@ -128,7 +128,7 @@ local function fixture()
       spaceType = function() return 'user' end,
       windowsForSpace = function(id) return env.spaceWindows[id] end,
       moveWindowToSpace = function(window, id)
-        env.moved[#env.moved + 1] = { windowID = window:id(), spaceID = id }
+        env.moved[#env.moved + 1] = { windowID = window:id(), spaceID = id, time = env.now }
         if env.moveMode == 'success' then env:setLocation(window, id); return true end
         if env.moveMode == 'unconfirmed' then return true end
         return false, 'test backend rejected move'
@@ -148,7 +148,8 @@ local function fixture()
       if env.rawUnavailable then return nil end
       return env.rawWindows
     end },
-    eventtap = { checkMouseButtons = function() return env.mouseButtons end },
+    eventtap = { checkMouseButtons = function() return env.mouseButtons end,
+      event = {types = {keyDown = 10, leftMouseDown = 1, rightMouseDown = 2}} },
     printf = function() end,
     alert = { show = function(message) env.alerts[#env.alerts + 1] = message end },
     fs = { attributes = function(path, attribute)
@@ -2008,6 +2009,8 @@ test('a background CG birth is placed without preparing a follow even after rece
   local opened = publishFollowBirth(e, false)
   e.manager:noteUserInput()
   e.manager:tick(); e:advance(0.5)
+  equal(opened.spaceID, e.source.spaceID); equal(#e.moved, 0, 'allow delayed AX focus before background placement')
+  e:advance(1); e.manager:tick(); e:advance(0.5)
   equal(opened.spaceID, e.target.spaceID); equal(#e.moved, 1)
   equal(#e.followPreparations, 0); equal(e.followed, 0)
 end)
@@ -2144,6 +2147,49 @@ test('Space creation arms follow before its own Mission Control changes focus wi
   equal(e.framed, 0); equal(opened.restoredFrames, 0)
 end)
 
+test('follow waits for its Space creation Mission Control animation to close after the move confirms', function()
+  local e=followFixture(true); local opened=publishFollowBirth(e)
+  local addSpace=hs.spaces.addSpaceToScreen
+  hs.spaces.addSpaceToScreen=function(screen)
+    e.missionControl=true
+    return addSpace(screen)
+  end
+  e.manager:noteUserInput(); e.manager:tick(); e:advance(1.1)
+  equal(#e.moved,1); equal(opened.spaceID,1001); equal(e.followed,0)
+  e:advance(.4); equal(e.followed,0)
+  e.missionControl=false; e:advance(.15)
+  equal(e.followed,1); equal(#e.followCompletions,1)
+  e:advance(2); equal(e.followed,1); equal(#e.added,1)
+end)
+
+test('a topology change cancels follow while waiting for the creation animation to close', function()
+  local e=followFixture(true); publishFollowBirth(e)
+  local addSpace=hs.spaces.addSpaceToScreen
+  hs.spaces.addSpaceToScreen=function(screen)
+    e.missionControl=true
+    return addSpace(screen)
+  end
+  e.manager:noteUserInput(); e.manager:tick(); e:advance(1.1)
+  equal(#e.moved,1); equal(e.followed,0)
+  e.manager:topologyChanged(); e.missionControl=false; e:advance(2)
+  equal(e.followed,0); equal(e.followCancellations,1)
+end)
+
+test('the own Space switch flag ignores only Mission Control and retains every manager follow guard', function()
+  for _, block in ipairs({'none','disabled','paused','locked','shutdown','startup','mouse','organizing'}) do
+    local e=followFixture(); e.missionControl=true
+    if block=='disabled' then e.manager.followEnabled=false
+    elseif block=='paused' then e.manager.paused=true
+    elseif block=='locked' then e.sessionLocked=true
+    elseif block=='shutdown' then e.manager.shuttingDown=true
+    elseif block=='startup' then e.manager.followQuietUntil=e.now+60
+    elseif block=='mouse' then e.mouseButtons.left=true
+    elseif block=='organizing' then e.manager.organizing=true end
+    equal(e.manager:followBlocked(false),true,block)
+    equal(e.manager:followBlocked(true),block~='none',block)
+  end
+end)
+
 test('an autolaunched session claim cannot follow even when its new window is focused after input', function()
   local e = followFixture()
   local opened = publishFollowBirth(e)
@@ -2232,6 +2278,301 @@ test('an unidentified OS session blocks follow without overwriting the last iden
   e.manager:configureFollowSession(nil)
   equal(e.manager.followQuietUntil, math.huge)
   equal(e.settings['deskpilot.followSession.v1'], saved)
+end)
+
+test('a new window whose AX focus arrives after the birth tick follows once after becoming focused', function()
+  local e=followFixture(); local opened=publishFollowBirth(e,false)
+  e.manager:noteUserInput(); e.manager:tick()
+  equal(#e.moved,0); equal(#e.manager.queue,1); equal(#e.followPreparations,0)
+  e:advance(.5); e.focusedWindow=opened; e:emit('focused',opened)
+  e.manager:tick(); e:advance(.5)
+  equal(#e.moved,1); equal(opened.spaceID,e.target.spaceID); equal(e.followed,1)
+  equal(e.followCompletions[1].windowID,opened:id())
+end)
+
+test('disabling follow clears queued intent and persists without changing startup quiet time', function()
+  local e=followFixture(); local opened=publishFollowBirth(e)
+  local hold=true
+  e.manager.session={claims=function() return false end,tick=function() return hold end}
+  e.manager:noteUserInput(); e.manager:tick(); equal(#e.manager.queue,1)
+  e.manager:configureFollowSession('session-a'); e.manager:configureFollowSession('session-b')
+  local quietUntil=e.manager.followQuietUntil
+  equal(e.manager:setFollowEnabled(false),false)
+  equal(e.settings['deskpilot.followNewWindows.v1'],false); equal(e.manager.queue[1].follow,nil)
+  local reloaded=Manager.new(e.context); equal(reloaded.followEnabled,false)
+  reloaded:configureFollowSession('session-b'); equal(reloaded.followQuietUntil,quietUntil)
+  equal(reloaded:setFollowEnabled(true),true); equal(e.settings['deskpilot.followNewWindows.v1'],true)
+  equal(reloaded.followQuietUntil,quietUntil,'enabling follow must not shorten startup protection')
+  hold=false; e.manager:tick(); e:advance(.5)
+  equal(opened.spaceID,e.target.spaceID); equal(e.followed,0); equal(#e.followPreparations,0)
+end)
+
+test('typing into the queued new window preserves its existing follow intent', function()
+  local e=followFixture(); local opened=publishFollowBirth(e)
+  local hold=true
+  e.manager.session={claims=function() return false end,tick=function() return hold end}
+  e.manager:noteUserInput(); e.manager:tick(); equal(#e.manager.queue,1)
+  local event={getType=function() return hs.eventtap.event.types.keyDown end}
+  e.manager:noteUserInput(event); e.manager:noteUserInput(event)
+  equal(e.manager.queue[1].follow.inputSerial,e.manager.inputSerial)
+  hold=false; e.manager:tick(); e:advance(.5)
+  equal(opened.spaceID,e.target.spaceID); equal(e.followed,1)
+  equal(#e.followPreparations,1)
+end)
+
+test('typing in another window cancels queued follow rather than refreshing its permission', function()
+  local e=followFixture(); local opened=publishFollowBirth(e)
+  local hold=true
+  e.manager.session={claims=function() return false end,tick=function() return hold end}
+  e.manager:noteUserInput(); e.manager:tick()
+  e.focusedWindow=e.existing
+  e.manager:noteUserInput({getType=function() return hs.eventtap.event.types.keyDown end})
+  e.focusedWindow=opened; hold=false; e.manager:tick(); e:advance(.5)
+  equal(opened.spaceID,e.target.spaceID); equal(e.followed,0); equal(#e.followPreparations,0)
+end)
+
+test('focus leaving and returning to a queued new window does not resurrect follow intent', function()
+  local e=followFixture(); local opened=publishFollowBirth(e)
+  local hold=true
+  e.manager.session={claims=function() return false end,tick=function() return hold end}
+  e.manager:noteUserInput(); e.manager:tick()
+  e.focusedWindow=e.existing; e:emit('focused',e.existing)
+  equal(e.manager.queue[1].follow,nil)
+  e.focusedWindow=opened; e:emit('focused',opened)
+  hold=false; e.manager:tick(); e:advance(.5)
+  equal(opened.spaceID,e.target.spaceID); equal(e.followed,0); equal(#e.followPreparations,0)
+end)
+
+local function organizationFixture(options)
+  options=options or {}
+  local e=fixture(); local screen=e:addScreen('a')
+  e.source=e:addWorkspace(1,'shared',screen)
+  if options.free~=false then e.target=e:addWorkspace(2,'free-a',screen) end
+  local external=e:addScreen('b')
+  e.other=e:addWorkspace(10,'free-b',external)
+  e.keeper=e:addWindow(10,'com.Keeper',e.source)
+  e.moving=e:addWindow(11,'com.Moving',e.source,true,500)
+  if options.multi then e.sibling=e:addWindow(12,'com.Moving',e.source,true,500) end
+  e.focusedWindow=e.keeper
+  e.active={a=e.source.spaceID,b=e.other.spaceID}
+  settleExistingWindows(e); installFollowSpy(e)
+  e.organized={}
+  e.context.organized=function(window,target)
+    e.organized[#e.organized+1]={id=window:id(),target=target.spaceID}
+    local key=e.groupKey and e.groupKey(window) or window:application():bundleID()
+    if e.rules[key] then e.rules[key].allowShared=false end
+  end
+  return e
+end
+
+local function runOrganization(e)
+  for _=1,80 do
+    e.manager:tick(); e:advance(.5)
+    if not e.manager.organizing and not e.manager.busy then return end
+  end
+  error('organization did not finish within the test time bound')
+end
+
+test('explicit organization separates two sharing apps using a free Space on the same monitor', function()
+  local e=organizationFixture(); local keeperFrame,movingFrame=e.keeper:frame(),e.moving:frame()
+  assert(e.manager:organize(e.keeper)); equal(e.manager.organizePlanned,1)
+  runOrganization(e)
+  equal(e.keeper.spaceID,e.source.spaceID); equal(e.moving.spaceID,e.target.spaceID)
+  equal(#e.moved,1); equal(#e.added,0); equal(e.manager.organizeDone,1)
+  equal(e.organized[1].id,e.moving:id()); equal(e.rules['com.Moving'].allowShared,false)
+  equal(e.keeper:frame(),keeperFrame); equal(e.moving:frame(),movingFrame)
+  equal(e.active.a,e.source.spaceID); equal(e.active.b,e.other.spaceID)
+  equal(#e.followPreparations,0); equal(e.followed,0); equal(e.framed,0)
+end)
+
+test('organization creates locally only when full and waits three seconds after confirming the new Space', function()
+  local e=organizationFixture({free=false})
+  assert(e.manager:organize(e.keeper)); e.manager:tick()
+  equal(#e.added,1); equal(e.added[1],'a'); equal(#e.moved,0)
+  e:advance(.6); local createdAt=e.manager.organization.createdAt; assert(createdAt)
+  e.manager:tick(); e:advance(2); e.manager:tick(); equal(#e.moved,0)
+  runOrganization(e)
+  equal(#e.added,1); equal(#e.moved,1); equal(e.moving.spaceID,1001)
+  assert(e.moved[1].time-createdAt>=3,'new Space metadata must settle before moving')
+  equal(e.keeper.spaceID,e.source.spaceID); equal(e.active.b,e.other.spaceID)
+  equal(#e.followPreparations,0); equal(e.followed,0)
+end)
+
+test('organization moves every window of one group serially to its single destination', function()
+  local e=organizationFixture({multi=true})
+  assert(e.manager:organize(e.keeper)); e.manager:tick()
+  equal(#e.moved,1); equal(e.sibling.spaceID,e.source.spaceID)
+  e.manager:tick(); equal(#e.moved,1,'wait for verification before the next window')
+  e:advance(.5); e.manager:tick(); equal(#e.moved,2)
+  e:advance(.5)
+  equal(e.moving.spaceID,e.target.spaceID); equal(e.sibling.spaceID,e.target.spaceID)
+  equal(e.manager.organizeDone,1); equal(#e.organized,2); equal(e.manager.organizing,false)
+  equal(#e.followPreparations,0); equal(e.followed,0); equal(#e.added,0)
+end)
+
+test('organization separates Chrome profile groups sharing a PID while preserving profile siblings', function()
+  local e=fixture(); chromeGroups(e)
+  local screen=e:addScreen('a'); local shared=e:addWorkspace(1,'shared',screen); local target=e:addWorkspace(2,'free',screen)
+  local keep=e:addWindow(10,chromeBundle,shared,true,500); keep.profile='Profile 1'
+  local move=e:addWindow(11,chromeBundle,shared,true,500); move.profile='Profile 2'
+  local sibling=e:addWindow(12,chromeBundle,shared,true,500); sibling.profile='Profile 2'
+  e.focusedWindow=keep; settleExistingWindows(e); installFollowSpy(e)
+  assert(e.manager:organize(keep)); runOrganization(e)
+  equal(keep.spaceID,shared.spaceID); equal(move.spaceID,target.spaceID); equal(sibling.spaceID,target.spaceID)
+  equal(#e.moved,2); equal(#e.added,0); equal(e.manager.organizeDone,1)
+  equal(e.followed,0); equal(#e.followPreparations,0)
+end)
+
+for _, unknown in ipairs({'CG read','Space membership'}) do
+  test('organization refuses an incomplete '..unknown..' before any desktop operation', function()
+    local e=organizationFixture()
+    if unknown=='CG read' then e.rawUnavailable=true else e.spaceWindows[e.target.spaceID]=nil end
+    equal(e.manager:organize(e.keeper),false)
+    equal(#e.moved,0); equal(#e.added,0); equal(#e.removed,0)
+    equal(e.manager.organization,nil); equal(#e.followPreparations,0)
+  end)
+end
+
+for _, interruption in ipairs({'input','pause','lock','topology'}) do
+  test('organization '..interruption..' cancels an in-flight creation without moving afterward', function()
+    local e=organizationFixture({free=false}); assert(e.manager:organize(e.keeper)); e.manager:tick()
+    equal(#e.added,1); equal(e.manager.busy,true)
+    if interruption=='input' then e.manager:noteUserInput(); e.manager:tick()
+    elseif interruption=='pause' then e.manager:pause()
+    elseif interruption=='lock' then e.sessionLocked=true; e.manager:tick()
+    else e.manager:topologyChanged() end
+    e:advance(1); e.manager:tick()
+    equal(e.manager.organizing,false); equal(e.manager.organization,nil)
+    equal(e.manager.busy,false); equal(#e.moved,0); equal(#e.added,1)
+    equal(e.keeper.spaceID,e.source.spaceID); equal(e.moving.spaceID,e.source.spaceID)
+    equal(e.followed,0); equal(#e.organized,0)
+  end)
+end
+
+test('a foreign occupant appearing at the selected target aborts the remaining group windows', function()
+  local e=organizationFixture({multi=true}); assert(e.manager:organize(e.keeper))
+  e.manager:tick(); e:advance(.5); equal(#e.moved,1)
+  e:addWindow(30,'com.Foreign',e.target)
+  e.manager:tick()
+  equal(e.manager.organizing,false); equal(#e.moved,1); equal(#e.added,0)
+  equal(e.sibling.spaceID,e.source.spaceID); equal(e.moving.spaceID,e.target.spaceID)
+  equal(e.manager.organizeDone,0)
+  assert(e.manager.organizeMessage:find('zajęte',1,true))
+end)
+
+for _, change in ipairs({'window ID','PID','source Space','source UUID','target UUID'}) do
+  test('organization rejects stale '..change..' instead of continuing its saved plan', function()
+    local e=organizationFixture({multi=change=='target UUID'})
+    assert(e.manager:organize(e.keeper))
+    local expectedMoves=0
+    if change=='window ID' then e.moving.windowID=999
+    elseif change=='PID' then
+      local old=e.moving:application()
+      e.moving.application=function() return {pid=function() return old:pid()+1 end,
+        bundleID=function() return old:bundleID() end,name=function() return old:name() end} end
+    elseif change=='source Space' then e:setLocation(e.moving,e.other.spaceID)
+    elseif change=='source UUID' then e.source.spaceUUID='recycled-source'
+    else
+      e.manager:tick(); e:advance(.5); expectedMoves=1
+      e.target.spaceUUID='recycled-target'
+    end
+    e.manager:advanceOrganization()
+    equal(e.manager.organizing,false); equal(#e.moved,expectedMoves); equal(#e.added,0)
+    equal(e.followed,0); equal(#e.followPreparations,0)
+  end)
+end
+
+test('an explicit manual move cancels the outstanding bulk plan and records only the manual choice', function()
+  local e=organizationFixture(); assert(e.manager:organize(e.keeper))
+  assert(e.manager:manualMove(e.moving,e.other)); e:advance(.5)
+  equal(e.manager.organizing,false); equal(e.moving.spaceID,e.other.spaceID)
+  equal(#e.moved,1); equal(#e.organized,0); equal(e.remembered[1].manual,true)
+  equal(e.followed,0); equal(#e.followPreparations,0)
+end)
+
+test('organization removes affected queued assignments and never uses their follow intent', function()
+  local e=organizationFixture()
+  e.manager:noteUserInput(); e.manager:enqueue(e.moving,true,{id=e.moving:id(),pid=e.moving:application():pid(),
+    key='com.Moving',generation=e.manager.generation,inputSerial=e.manager.inputSerial,time=e.now,focused=true})
+  equal(#e.manager.queue,1); assert(e.manager:organize(e.keeper)); equal(#e.manager.queue,0)
+  runOrganization(e); equal(e.moving.spaceID,e.target.spaceID)
+  equal(#e.followPreparations,0); equal(e.followed,0)
+end)
+
+test('organization refuses an active session restore even between native move operations', function()
+  local e=organizationFixture()
+  e.manager.session={isRestoring=function() return true end}
+  equal(e.manager.busy,false)
+  equal(e.manager:organize(e.keeper),false)
+  equal(e.manager.organization,nil); equal(#e.moved,0); equal(#e.added,0)
+end)
+
+test('organization stops if the contested source Space changes monitor before an off-source sibling moves', function()
+  local e=organizationFixture({multi=true})
+  e:setLocation(e.sibling,e.other.spaceID)
+  assert(e.manager:organize(e.keeper)); e.manager:tick(); e:advance(.5)
+  equal(#e.moved,1); equal(e.moving.spaceID,e.target.spaceID)
+  e.source.screenUUID,e.source.screen=e.other.screenUUID,e.other.screen
+  e.manager:advanceOrganization()
+  equal(e.manager.organizing,false); equal(#e.moved,1)
+  equal(e.sibling.spaceID,e.other.spaceID); equal(e.manager.organizeDone,0)
+end)
+
+for _, knowledge in ipairs({'observed identity','plain app PID'}) do
+  test('organization skips the whole group with a missing AX sibling identified by '..knowledge, function()
+    local e=organizationFixture({multi=knowledge=='observed identity'})
+    if knowledge=='observed identity' then
+      e.windows={e.keeper,e.moving}
+    else
+      e.sibling=e:addWindow(12,'com.Moving',e.source,false,500)
+    end
+    assert(e.manager:organize(e.keeper))
+    equal(e.manager.organizeSkipped,1); equal(e.manager.organizePlanned,0)
+    equal(e.manager.organization,nil); equal(#e.moved,0); equal(#e.added,0)
+    equal(e.moving.spaceID,e.source.spaceID); equal(e.sibling.spaceID,e.source.spaceID)
+  end)
+end
+
+for _, missingProfile in ipairs({'Profile 1','Profile 2','unidentified profile'}) do
+  test('missing AX Chrome '..missingProfile..' does not inherit another profile from their shared PID', function()
+    local e=fixture(); chromeGroups(e)
+    local screen=e:addScreen('a'); local shared=e:addWorkspace(1,'shared',screen)
+    local target=e:addWorkspace(2,'free',screen)
+    local keeper=e:addWindow(10,chromeBundle,shared,true,500); keeper.profile='Profile 1'
+    local moving=e:addWindow(11,chromeBundle,shared,true,500); moving.profile='Profile 2'
+    local missing
+    if missingProfile~='unidentified profile' then
+      missing=e:addWindow(12,chromeBundle,shared,true,500); missing.profile=missingProfile
+    end
+    e.focusedWindow=keeper; settleExistingWindows(e); installFollowSpy(e)
+    if missing then e.windows={keeper,moving}
+    else missing=e:addWindow(12,chromeBundle,shared,false,500) end
+    assert(e.manager:organize(keeper))
+    if missingProfile=='Profile 2' then
+      equal(e.manager.organizeSkipped,1); equal(e.manager.organizePlanned,0)
+      equal(moving.spaceID,shared.spaceID); equal(#e.moved,0)
+    else
+      equal(e.manager.organizeSkipped,0); runOrganization(e)
+      equal(moving.spaceID,target.spaceID); equal(#e.moved,1)
+    end
+    equal(keeper.spaceID,shared.spaceID); equal(missing.spaceID,shared.spaceID)
+    equal(#e.added,0); equal(#e.followPreparations,0)
+  end)
+end
+
+test('organization cancels historical restore claims for both the moved group and the keeper', function()
+  local e=organizationFixture()
+  local claims={['com.Keeper']=true,['com.Moving']=true,['com.Unrelated']=true}
+  e.manager.session={isRestoring=function() return false end,
+    claims=function(_,key) return claims[key]==true end,
+    cancelGroup=function(_,key) claims[key]=false end,
+    tick=function() return false end}
+  assert(e.manager:organize(e.keeper))
+  equal(claims['com.Keeper'],false); equal(claims['com.Moving'],false)
+  equal(claims['com.Unrelated'],true)
+  runOrganization(e)
+  equal(e.keeper.spaceID,e.source.spaceID); equal(e.moving.spaceID,e.target.spaceID)
+  equal(e.manager.organizeDone,1); equal(#e.followPreparations,0)
 end)
 
 print('Manager tests: ' .. passed .. ' passed, ' .. failed .. ' failed')

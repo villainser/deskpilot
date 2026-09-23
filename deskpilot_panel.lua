@@ -139,6 +139,7 @@ function M.new(ctx)
   local function visibleStatus(status)
     local result = {}
     for _, key in ipairs({ 'paused', 'busy', 'settling', 'missionControl', 'locked', 'lastError',
+        'followNewWindows', 'followStartupQuiet', 'organizing', 'organizePlanned', 'organizeDone', 'organizeMessage',
         'layoutRevision', 'layoutChangedAt', 'layoutMessage', 'metadataError', 'cleanupEnabled', 'cleaning',
         'cleanupPhase', 'cleanupPlanned', 'cleanupDone', 'cleanupPending', 'cleanupSkipped',
         'sessionPhase', 'sessionPending', 'sessionRestored', 'sessionSavedAt', 'sessionMonitorCount',
@@ -294,6 +295,7 @@ function M.new(ctx)
     if type(body) ~= 'table' or type(body.action) ~= 'string' then return end
     if body.action == 'ready' then self.ready = true; self:refresh(); self:startGallery(); return end
     if not self.visible then return end
+    if screenLocked() then self:hide(); return end
     local action = body.action
     if action == 'enablePreviews' then
       self.previewEnabled = true
@@ -350,8 +352,22 @@ function M.new(ctx)
     if action == 'pause' then ctx.pause(); self:refresh(); return end
     if action == 'resume' then ctx.resume(); self:refresh(); return end
     if action == 'settings' then self:hide(); ctx.settings(); return end
+    if action == 'toggleFollow' then
+      if type(ctx.toggleFollow) == 'function' then ctx.toggleFollow(); self:pollStatus() end
+      return
+    end
     local status = ctx.status()
-    if status.busy or status.missionControl then
+    if action == 'organize' then
+      if status.paused or status.busy or status.missionControl or status.locked or status.settling
+          or status.organizing or status.sessionPhase == 'restoring' then
+        hs.alert.show(status.paused and 'DeskPilot: wznów automatykę przed organizowaniem biurek.'
+          or 'DeskPilot: poczekaj na zakończenie bieżącej zmiany układu.')
+        return
+      end
+      if type(ctx.organize) == 'function' then ctx.organize(sourceWindow()); self:pollStatus() end
+      return
+    end
+    if status.busy or status.missionControl or status.organizing then
       hs.alert.show('DeskPilot: poczekaj na zakończenie bieżącego ruchu.')
       return
     end
