@@ -310,11 +310,13 @@ local function installActionBridge(e)
   e.context.organize = function(sourceWindow)
     e.actions.organize = e.actions.organize + 1
     e.organizeSource = sourceWindow
-    e.status.organizing, e.status.organizePlanned, e.status.organizeDone = true, 2, 0
+    e.status.organizePending, e.status.organizing = true, false
+    e.status.organizeMessage = 'Zlecenie przyjęte. Czekam na gotowy układ.'
+    return true
   end
   e.context.pause = function()
     e.actions.pause = e.actions.pause + 1
-    e.status.paused, e.status.organizing = true, false
+    e.status.paused, e.status.organizing, e.status.organizePending = true, false, false
   end
   e.panel:create({ x = 0, y = 0, w = 700, h = 860 })
   function e:send(action)
@@ -350,11 +352,14 @@ test('organization is an explicit action and its progress uses status-only updat
   e:send('organize')
   equal(e.actions.organize, 1)
   equal(e.organizeSource, e.windows[1], 'organization receives the window focused before opening the panel')
+  assert(e.scripts[#e.scripts]:find('organizePending=true', 1, true))
+  equal(e.panel.visible, true, 'an accepted pending request remains visible until actual execution')
+  e:send('organize')
+  equal(e.actions.organize, 1, 'an accepted pending request cannot be launched twice')
+  e.status.organizePending, e.status.organizing, e.status.organizePlanned, e.status.organizeDone = false, true, 2, 1
+  e.panel:pollStatus()
   assert(e.scripts[#e.scripts]:find('organizing=true', 1, true))
   assert(e.scripts[#e.scripts]:find('organizePlanned=2', 1, true))
-  e:send('organize')
-  equal(e.actions.organize, 1, 'an in-progress organization cannot be launched twice')
-  e.status.organizeDone = 1; e.panel:pollStatus()
   assert(e.scripts[#e.scripts]:find('organizeDone=1', 1, true))
   e.status.organizing, e.status.organizeMessage = false, 'Biurka są już rozdzielone.'
   e.panel:pollStatus()
@@ -362,20 +367,72 @@ test('organization is an explicit action and its progress uses status-only updat
   equal(e.metadataCalls, scans); equal(#e.captures, captures)
 end)
 
-test('organization refuses paused or unstable state while pause can cancel active organization', function()
-  for _, key in ipairs({ 'paused', 'busy', 'missionControl', 'locked', 'settling', 'organizing', 'sessionPhase' }) do
+test('organization refuses paused or duplicate requests while pause cancels pending and running work', function()
+  for _, key in ipairs({ 'paused', 'locked', 'organizing', 'organizePending' }) do
     local e = fixture()
     installActionBridge(e)
-    e.status[key] = key == 'sessionPhase' and 'restoring' or true
+    e.status[key] = true
     e:send('organize')
     equal(e.actions.organize, 0, key .. ' must block organization')
     equal(#e.alerts, 1)
   end
+  for _, key in ipairs({ 'organizing', 'organizePending' }) do
+    local e = fixture()
+    installActionBridge(e)
+    e.status[key] = true
+    e:send('pause')
+    equal(e.actions.pause, 1); equal(e.status.paused, true)
+    equal(e.status.organizing, false); equal(e.status.organizePending, false)
+  end
+end)
+
+test('transient settling busy Mission Control or restoration accepts organization into pending status', function()
+  for _, key in ipairs({ 'settling', 'busy', 'missionControl', 'sessionPhase' }) do
+    local e = fixture()
+    installActionBridge(e)
+    e.status[key] = key == 'sessionPhase' and 'restoring' or true
+    e.panel:refresh()
+    local scans, captures = e.metadataCalls, #e.captures
+    e:send('organize')
+    equal(e.actions.organize, 1, key .. ' must defer execution rather than discard the request')
+    equal(e.status.organizePending, true); equal(e.panel.visible, true)
+    equal(#e.alerts, 0)
+    assert(e.scripts[#e.scripts]:find('organizePending=true', 1, true))
+    equal(e.metadataCalls, scans); equal(#e.captures, captures)
+  end
+end)
+
+test('a rejected organization request leaves its explanation visible in the open panel', function()
   local e = fixture()
   installActionBridge(e)
-  e.status.organizing = true
-  e:send('pause')
-  equal(e.actions.pause, 1); equal(e.status.paused, true); equal(e.status.organizing, false)
+  e.status.lastError = 'Earlier AX error'
+  e.context.organize = function()
+    e.actions.organize = e.actions.organize + 1
+    e.status.organizeMessage = 'Nie można rozpocząć: brak gotowego odczytu monitorów.'
+    return false
+  end
+  e.panel:refresh()
+  local scans = e.metadataCalls
+  e:send('organize')
+  equal(e.actions.organize, 1); equal(e.panel.visible, true)
+  assert(e.scripts[#e.scripts]:find('organizeMessage=Nie można rozpocząć: brak gotowego odczytu monitorów.', 1, true))
+  equal(e.metadataCalls, scans); equal(#e.captures, 0)
+end)
+
+test('failed or malformed Space window queries produce unavailable cards without crashing the panel', function()
+  for _, failure in ipairs({ 'exception', 'string', 'false' }) do
+    local e = fixture()
+    hs.spaces.windowsForSpace = function()
+      if failure == 'exception' then error('axuielement unavailable') end
+      if failure == 'string' then return 'axuielement unavailable' end
+      return false
+    end
+    local card = e:snapshot(true)
+    equal(card.unavailable, true, failure .. ' cannot be treated as an empty desktop')
+    equal(#card.windows, 0); equal(#e.captures, 0)
+    e.panel:refresh()
+    equal(e.panel.lastError, nil)
+  end
 end)
 
 test('hidden or locked panels cannot start organization or change the follow preference', function()

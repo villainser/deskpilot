@@ -394,11 +394,18 @@ function M.new(ctx)
   function self:occupancy(ignoreWindow, allowedGroups)
     local ax, cg, occupied = {}, {}, {}
     for _, window in ipairs(windows()) do ax[window:id()] = window end
-    local raw = hs.window.list(true)
+    local raw
     if hs.fs.attributes(hs.configdir .. '/deskpilot-move', 'mode') == 'file' then
       raw = self.metadataAt and now() - self.metadataAt < 5 and self.metadata or nil
+    else
+      local ok, result = pcall(hs.window.list, true)
+      if ok then raw = result end
     end
-    if type(raw) ~= 'table' then return occupied end
+    self.occupancyError = nil
+    if type(raw) ~= 'table' then
+      self.occupancyError = 'Oczekuję na pełny odczyt okien macOS.'
+      return occupied
+    end
     for _, item in ipairs(raw) do cg[item.kCGWindowNumber] = item end
     local ignoreKey = ignoreWindow and appKey(ignoreWindow)
     local ignoreApp = ignoreWindow and ignoreWindow:application()
@@ -416,8 +423,10 @@ function M.new(ctx)
           or bundle == 'org.hammerspoon.Hammerspoon' then systemPIDs[app:pid()] = true end
     end
     for _, ws in ipairs(ctx.workspaces()) do
-      local ids = spaces.windowsForSpace(ws.spaceID)
-      if ids then
+      -- Hammerspoon can throw while resolving its own AX application after a
+      -- transient application lookup failure. Unknown is never proof of empty.
+      local readable, ids = pcall(spaces.windowsForSpace, ws.spaceID)
+      if readable and type(ids) == 'table' then
         occupied[ws.spaceID] = false
         for _, id in ipairs(ids) do
           local window, item = ax[id], cg[id]
@@ -444,6 +453,8 @@ function M.new(ctx)
             break
           end
         end
+      else
+        self.occupancyError = 'Oczekuję na odczyt okien wszystkich biurek.'
       end
     end
     return occupied
@@ -597,11 +608,11 @@ function M.new(ctx)
     local screen = screenPresent(uuid)
     local before = {}
     for _, item in ipairs(ctx.workspaces()) do before[item.spaceID] = true end
-    local ok, err = spaces.addSpaceToScreen(screen)
-    if not ok then
+    local called, ok, err = pcall(spaces.addSpaceToScreen, screen)
+    if not called or not ok then
       cancelFollow()
       self.busy = false; self:pause()
-      report('nie mozna utworzyc biurka: ' .. tostring(err)); return
+      report('nie mozna utworzyc biurka: ' .. tostring(called and err or ok)); return
     end
     local generation = self.generation
     later(0.6, function()
@@ -659,11 +670,40 @@ function M.new(ctx)
     return table.concat(ids, '|') == topology
   end
   function self:finishOrganization(message)
-    if not self.organization then return end
-    self.organizing, self.organization = false, nil
+    if not self.organization and not self.organizationRequest then return end
+    self.organizing, self.organization, self.organizationRequest = false, nil, nil
     self.organizeMessage = message or ('Rozdzielono grupy: ' .. tostring(self.organizeDone or 0) .. '.'
       .. ((self.organizeSkipped or 0) > 0 and ' Pominięto grupy z niedostępnymi oknami; odwiedź ich biurka i spróbuj ponownie.' or ''))
     hs.alert.show('DeskPilot: ' .. self.organizeMessage)
+  end
+  function self:requestOrganization(focusedWindow)
+    if self.organizationRequest or self.organizing then return false end
+    if self:checkSessionLock() or self.paused or self.shuttingDown
+        or spaces.screensHaveSeparateSpaces() ~= true then
+      self.organizeMessage = 'Organizowanie niedostępne: wznów automatykę na odblokowanym Macu z osobnymi biurkami monitorów.'
+      return false
+    end
+    -- The click itself starts the layout guard. Accept the intent now and plan
+    -- from fresh data once that guard (or an existing operation) has finished.
+    self.organizationRequest = {focusedWindow = focusedWindow, generation = self.generation,
+      topology = screenSignature(), inputSerial = self.inputSerial, deadline = now() + 20}
+    self.organizePlanned, self.organizeDone, self.organizeSkipped = 0, 0, 0
+    self.organizeMessage = 'Czekam na ustabilizowanie układu i pełny odczyt biurek…'
+    return true
+  end
+  function self:advanceOrganizationRequest()
+    local request = self.organizationRequest
+    if not request then return end
+    local list = ctx.workspaces()
+    if not validCleanupSnapshot(list, request.topology) then return end
+    local occupied = self:occupancy()
+    for _, ws in ipairs(list) do if occupied[ws.spaceID] == nil then return end end
+    if self:organize(request.focusedWindow) then
+      self.organizationRequest = nil
+      -- Keep no-op/rejection explanations in the visible panel. Hide only when
+      -- a real batch has been accepted, before it starts moving windows.
+      if self.organizing and ctx.organizeStarted then ctx.organizeStarted() end
+    end
   end
   function self:organize(focusedWindow)
     if self.organizing then return false end
@@ -703,7 +743,15 @@ function M.new(ctx)
     local focused = focusedWindow or hs.window.focusedWindow()
     local plan = Organize.plan(rows, focused and appKey(focused))
     local unavailable = {}
-    local raw = self.metadataAt and now() - self.metadataAt < 5 and self.metadata or hs.window.list(true)
+    local raw = self.metadataAt and now() - self.metadataAt < 5 and self.metadata
+    if not raw then
+      local ok, result = pcall(hs.window.list, true)
+      if ok then raw = result end
+    end
+    if type(raw) ~= 'table' then
+      self.organizeMessage = 'Oczekuję na pełny odczyt okien macOS.'
+      return false
+    end
     for _, item in pairs(raw or {}) do
       local id, pid = item.kCGWindowNumber, item.kCGWindowOwnerPID
       if item.kCGWindowLayer == 0 and not references[id] then
@@ -800,8 +848,11 @@ function M.new(ctx)
         local before = {}
         for _, ws in ipairs(ctx.workspaces()) do before[ws.spaceUUID] = true end
         self.busy = true
-        local ok = spaces.addSpaceToScreen(screen)
-        if not ok then self.busy = false; self:finishOrganization('Nie udało się utworzyć biurka.'); return end
+        local called, ok = pcall(spaces.addSpaceToScreen, screen)
+        if not called or not ok then
+          self.busy = false
+          self:finishOrganization('Nie udało się potwierdzić utworzenia biurka. Sprawdź układ przed ponowną próbą.'); return
+        end
         later(.6, function()
           self.busy = false
           if self.organization ~= batch or batch.generation ~= self.generation then return end
@@ -1039,12 +1090,24 @@ function M.new(ctx)
     -- Mission Control does not emit a Space-switch event for every reorder.
     -- Poll native identity/order even when paused or while a move is finishing.
     self:observeLayout(interacting)
+    local request = self.organizationRequest
+    if request and (request.inputSerial ~= self.inputSerial or request.generation ~= self.generation
+        or request.topology ~= topology or self.paused or request.deadline <= now()) then
+      self:finishOrganization(request.deadline <= now()
+        and 'Nie udało się uzyskać gotowego układu w ciągu 20 s. Spróbuj ponownie.'
+        or 'Anulowano oczekujące organizowanie po zmianie układu lub interakcji.')
+    end
     if self.organizing and (self.organization.inputSerial ~= self.inputSerial
         or self.organization.generation ~= self.generation or self.organization.deadline <= now()) then
       self:finishOrganization('Przerwano organizowanie po interakcji lub upływie czasu.')
     end
     if interacting or now() < self.guardUntil or now() < self.layoutGuardUntil or self.busy then return end
     if self.organizing then self:advanceOrganization(); return end
+    if self.organizationRequest then
+      if self.session and self.session:isRestoring() then self.session:tick()
+      elseif not self.cleaning then self:advanceOrganizationRequest() end
+      return
+    end
     local learningMove = false
     for _, window in ipairs(windows()) do
       if ctx.managed(window) then
@@ -1144,11 +1207,12 @@ function M.new(ctx)
       cleaning = self.cleaning == true, cleanupPhase = self.cleanupPhase,
       cleanupPlanned = self.cleanupPlanned or 0, cleanupDone = self.cleanupDone or 0,
       cleanupPending = self.cleanupPending or 0, cleanupSkipped = self.cleanupSkipped or 0,
-      metadataError = self.metadataError, metadataReads = self.metadataReads or 0,
+      metadataError = self.metadataError, metadataReads = self.metadataReads or 0, occupancyError = self.occupancyError,
       separateSpaces = spaces.screensHaveSeparateSpaces(),
       placementMode = 'new-windows-only', automaticResize = false, automaticFocus = self.followEnabled and ctx.prepareFollow ~= nil,
       followNewWindows = self.followEnabled and ctx.prepareFollow ~= nil, followStartupQuiet = now() < self.followQuietUntil,
-      organizing = self.organizing == true, organizePlanned = self.organizePlanned or 0,
+      organizing = self.organizing == true, organizePending = self.organizationRequest ~= nil,
+      organizePlanned = self.organizePlanned or 0,
       organizeDone = self.organizeDone or 0, organizeMessage = self.organizeMessage,
       settling = now() < self.guardUntil or now() < self.layoutGuardUntil,
       missionControl = self.missionControl, layoutRevision = self.layoutRevision,

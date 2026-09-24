@@ -77,7 +77,9 @@ Ta funkcja obejmuje zarządzane zwykłe okna. Natywny pełny ekran, Split View, 
 
 Przycisk **Organizuj teraz** na dole panelu sprawdza wszystkie monitory. Na biurku współdzielonym przez różne aplikacje lub profile Chrome pozostawia jedną grupę, a pozostałe przenosi na wolne albo nowe biurka **tego samego monitora**. Wszystkie dostępne standardowe okna danej aplikacji albo rozpoznanego profilu Chrome pozostają razem. Nie jest to stała reguła rozbijająca ręcznie wspólne biurka — działa tylko po Twoim poleceniu.
 
-Organizowanie wymaga włączonej automatyki i zakończenia trwających zmian układu. Nie podąża za przenoszonymi oknami, również gdy przełącznik podążania jest włączony. Nowa interakcja użytkownika przerywa pozostałe operacje; możesz też użyć **Wstrzymaj**. Już wykonane ruchy pozostają. Panel pokazuje postęp lub wynik po ponownym otwarciu. Nierozpoznane okna pozostają na miejscu. Gdy system potwierdza istnienie niedostępnego okna rozpoznanej grupy, cała grupa jest pomijana; odwiedź jej biurka i ponów organizowanie.
+Przy pauzie najpierw wybierz **Wznów**. Kliknięcie **Organizuj teraz** przyjmuje polecenie także podczas trwających zmian układu. Panel pokazuje **Czekam na układ**, a program czeka do **20 sekund** na stabilny, pełny odczyt biurek i zakończenie bieżących operacji. Gdy układ jest gotowy, rozpoczyna rozdzielanie. Jeśli nie uda się uzyskać odczytu w tym czasie, kończy oczekiwanie z komunikatem; możesz spróbować ponownie.
+
+Kolejna interakcja użytkownika anuluje oczekujące polecenie lub przerywa pozostałe ruchy; **Wstrzymaj** również je zatrzymuje. Już wykonane ruchy pozostają. Organizowanie nie podąża za oknami, również gdy przełącznik podążania jest włączony. Panel chowa się dopiero przed faktycznym rozpoczęciem organizowania; odmowa lub informacja, że układ jest już rozdzielony, pozostaje widoczna. Po ponownym otwarciu zobaczysz postęp lub wynik. Nierozpoznane okna pozostają na miejscu. Gdy system potwierdza istnienie niedostępnego okna rozpoznanej grupy, cała grupa jest pomijana; odwiedź jej biurka i ponów organizowanie.
 
 ### Pamięć ostatniej sesji i start programów
 

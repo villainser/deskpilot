@@ -72,7 +72,8 @@ function M.new(ctx)
         for key, value in pairs(ws) do entry[key] = value end
         entry.screenFrame = ws.screen:fullFrame()
         prepared[#prepared + 1] = entry
-        spaceWindows[ws.spaceID] = hs.spaces.windowsForSpace(ws.spaceID)
+        local ok, ids = pcall(hs.spaces.windowsForSpace, ws.spaceID)
+        spaceWindows[ws.spaceID] = ok and type(ids) == 'table' and ids or nil
       end
     end
     local source = sourceWindow()
@@ -139,7 +140,7 @@ function M.new(ctx)
   local function visibleStatus(status)
     local result = {}
     for _, key in ipairs({ 'paused', 'busy', 'settling', 'missionControl', 'locked', 'lastError',
-        'followNewWindows', 'followStartupQuiet', 'organizing', 'organizePlanned', 'organizeDone', 'organizeMessage',
+        'followNewWindows', 'followStartupQuiet', 'organizing', 'organizePending', 'organizePlanned', 'organizeDone', 'organizeMessage',
         'layoutRevision', 'layoutChangedAt', 'layoutMessage', 'metadataError', 'cleanupEnabled', 'cleaning',
         'cleanupPhase', 'cleanupPlanned', 'cleanupDone', 'cleanupPending', 'cleanupSkipped',
         'sessionPhase', 'sessionPending', 'sessionRestored', 'sessionSavedAt', 'sessionMonitorCount',
@@ -358,10 +359,10 @@ function M.new(ctx)
     end
     local status = ctx.status()
     if action == 'organize' then
-      if status.paused or status.busy or status.missionControl or status.locked or status.settling
-          or status.organizing or status.sessionPhase == 'restoring' then
+      if status.paused or status.locked or status.organizing or status.organizePending then
         hs.alert.show(status.paused and 'DeskPilot: wznów automatykę przed organizowaniem biurek.'
-          or 'DeskPilot: poczekaj na zakończenie bieżącej zmiany układu.')
+          or 'DeskPilot: organizowanie już oczekuje lub trwa.')
+        self:pollStatus()
         return
       end
       if type(ctx.organize) == 'function' then ctx.organize(sourceWindow()); self:pollStatus() end

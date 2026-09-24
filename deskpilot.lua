@@ -1351,8 +1351,7 @@ local function chromeProfilesMenu()
 end
 
 local function organizeNow(window)
-  if workspacePanel then workspacePanel:hide() end
-  return manager:organize(window)
+  return manager:requestOrganization(window)
 end
 
 local function menuItems()
@@ -1365,7 +1364,8 @@ local function menuItems()
     { title = manager and (manager.paused and "Wznow automatyke" or "Wstrzymaj automatyke") or "Automatyka",
       fn = function() if manager.paused then manager:resume() else manager:pause() end end },
     { title = "Usun puste, nieaktywne biurka", fn = function() manager:cleanup() end },
-    { title = "Organizuj teraz — rozdziel aplikacje i profile", disabled = manager.paused or manager.busy or manager.organizing,
+    { title = "Organizuj teraz — rozdziel aplikacje i profile",
+      disabled = manager.paused or manager.locked or manager.organizationRequest ~= nil or manager.organizing,
       fn = function() organizeNow() end },
     { title = "Podążaj za nowym oknem", checked = manager.followEnabled,
       fn = function() manager:setFollowEnabled(not manager.followEnabled) end },
@@ -1616,6 +1616,7 @@ manager = require("deskpilot_manager").new({
     return manager and manager.preferredSessionScreen and manager.preferredSessionScreen(window, rule)
   end,
   prepareFollow = function(window) return windowFollow and windowFollow:begin(window) end,
+  organizeStarted = function() if workspacePanel then workspacePanel:hide() end end,
   organized = function(window, workspace)
     local rule = existingRuleForWindow(window)
     if rule then

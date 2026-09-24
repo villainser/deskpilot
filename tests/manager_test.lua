@@ -2368,7 +2368,7 @@ end
 local function runOrganization(e)
   for _=1,80 do
     e.manager:tick(); e:advance(.5)
-    if not e.manager.organizing and not e.manager.busy then return end
+    if not e.manager:status().organizePending and not e.manager.organizing and not e.manager.busy then return end
   end
   error('organization did not finish within the test time bound')
 end
@@ -2566,13 +2566,237 @@ test('organization cancels historical restore claims for both the moved group an
   e.manager.session={isRestoring=function() return false end,
     claims=function(_,key) return claims[key]==true end,
     cancelGroup=function(_,key) claims[key]=false end,
-    tick=function() return false end}
+    tick=function() return false end,status=function() return {} end}
   assert(e.manager:organize(e.keeper))
   equal(claims['com.Keeper'],false); equal(claims['com.Moving'],false)
   equal(claims['com.Unrelated'],true)
   runOrganization(e)
   equal(e.keeper.spaceID,e.source.spaceID); equal(e.moving.spaceID,e.target.spaceID)
   equal(e.manager.organizeDone,1); equal(#e.followPreparations,0)
+end)
+
+test('a requested organization survives its own click and starts only after mouse release and settling', function()
+  local e=organizationFixture()
+  e.mouseButtons.left=true; e.manager:noteUserInput()
+  e.manager:tick() -- The requesting click starts the ordinary interaction guard.
+  assert(e.manager:requestOrganization(e.keeper))
+  equal(e.manager:status().organizePending,true)
+  assert(type(e.manager.organizeMessage)=='string' and #e.manager.organizeMessage>0)
+  e.manager:tick(); equal(#e.moved,0); equal(#e.added,0)
+  e.mouseButtons={}; e.manager:tick()
+  e:advance(1.4); e.manager:tick()
+  equal(e.manager:status().organizePending,true); equal(#e.moved,0)
+  e:advance(.2); runOrganization(e)
+  equal(e.manager:status().organizePending,false)
+  equal(e.manager.organizeDone,1); equal(e.moving.spaceID,e.target.spaceID)
+  equal(#e.moved,1); equal(#e.added,0); equal(#e.followPreparations,0)
+end)
+
+for _, obstacle in ipairs({'busy','Mission Control','mouse','startup guard','layout guard','session restore'}) do
+  test('an organization request waits for '..obstacle..' without starting or losing the request', function()
+    local e=organizationFixture()
+    local restoring=obstacle=='session restore'
+    if obstacle=='busy' then e.manager.busy=true
+    elseif obstacle=='Mission Control' then e.missionControl=true
+    elseif obstacle=='mouse' then e.mouseButtons.left=true
+    elseif obstacle=='startup guard' then e.manager.guardUntil=e.now+3
+    elseif obstacle=='layout guard' then e.manager.layoutGuardUntil=e.now+3
+    else e.manager.session={isRestoring=function() return restoring end,
+      claims=function() return false end,cancelGroup=function() end,
+      tick=function() return false end,status=function() return {} end} end
+    assert(e.manager:requestOrganization(e.keeper))
+    for _=1,3 do e.manager:tick(); e:advance(.2) end
+    equal(e.manager:status().organizePending,true)
+    equal(e.manager.organization,nil); equal(#e.moved,0); equal(#e.added,0)
+    e.manager.busy=false; e.missionControl=false; e.mouseButtons={}; restoring=false
+    e:advance(3); runOrganization(e)
+    equal(e.manager:status().organizePending,false); equal(e.manager.organizeDone,1)
+    equal(#e.moved,1); equal(#e.followPreparations,0); equal(e.followed,0)
+  end)
+end
+
+for _, reason in ipairs({'paused','locked','shutdown'}) do
+  test('an organization request rejected while '..reason..' reports its state without becoming pending', function()
+    local e=organizationFixture()
+    if reason=='paused' then e.manager:pause()
+    elseif reason=='locked' then e.sessionLocked=true
+    else e.manager:shutdown() end
+    equal(e.manager:requestOrganization(e.keeper),false)
+    equal(e.manager:status().organizePending,false)
+    assert(type(e.manager.organizeMessage)=='string' and #e.manager.organizeMessage>0)
+    equal(#e.moved,0); equal(#e.added,0)
+  end)
+end
+
+test('duplicate organization requests neither replace an accepted request nor extend its twenty-second deadline', function()
+  local e=organizationFixture(); e.manager.busy=true
+  assert(e.manager:requestOrganization(e.keeper)); e:advance(10)
+  equal(e.manager:requestOrganization(e.moving),false)
+  equal(e.manager:status().organizePending,true)
+  e:advance(10.1); e.manager:tick()
+  equal(e.manager:status().organizePending,false)
+  assert(type(e.manager.organizeMessage)=='string' and #e.manager.organizeMessage>0)
+  e.manager.busy=false; e:advance(3); e.manager:tick()
+  equal(e.manager.organization,nil); equal(#e.moved,0); equal(#e.added,0)
+end)
+
+test('requesting organization during an active organization does not queue a second run', function()
+  local e=organizationFixture(); assert(e.manager:organize(e.keeper))
+  equal(e.manager:requestOrganization(e.keeper),false)
+  runOrganization(e); e:advance(3); e.manager:tick()
+  equal(e.manager:status().organizePending,false); equal(#e.moved,1)
+  equal(e.manager.organizeDone,1); equal(#e.followPreparations,0)
+end)
+
+for _, interruption in ipairs({'new input','pause','lock','topology','shutdown'}) do
+  test('a pending organization is cancelled by '..interruption..' and cannot start after the interruption ends', function()
+    local e=organizationFixture(); e.manager.busy=true
+    assert(e.manager:requestOrganization(e.keeper))
+    if interruption=='new input' then e.manager:noteUserInput()
+    elseif interruption=='pause' then e.manager:pause()
+    elseif interruption=='lock' then e.sessionLocked=true
+    elseif interruption=='topology' then e.manager:topologyChanged()
+    else e.manager:shutdown() end
+    e.manager:tick(); equal(e.manager:status().organizePending,false)
+    e.manager.busy=false; e.manager.paused=false; e.manager.shuttingDown=false; e.sessionLocked=false
+    e.manager:tick(); e:advance(9); e.manager:tick()
+    equal(e.manager:status().organizePending,false); equal(e.manager.organization,nil)
+    equal(#e.moved,0); equal(#e.added,0); equal(#e.followPreparations,0)
+  end)
+end
+
+for _, unavailable in ipairs({'CG snapshot','Space list','Space exception'}) do
+  test('a request waits for a complete '..unavailable..' and retries reading without pausing', function()
+    local e=organizationFixture(); local ready=false
+    local readSpace=hs.spaces.windowsForSpace
+    if unavailable=='CG snapshot' then e.rawUnavailable=true
+    else hs.spaces.windowsForSpace=function(id)
+      if id==e.target.spaceID and not ready then
+        if unavailable=='Space exception' then error('transient native read failure') end
+        return nil
+      end
+      return readSpace(id)
+    end end
+    assert(e.manager:requestOrganization(e.keeper))
+    for _=1,3 do e.manager:tick(); e:advance(.5) end
+    equal(e.manager:status().organizePending,true); equal(e.manager.paused,false)
+    equal(#e.moved,0); equal(#e.added,0); equal(e.manager.organization,nil)
+    ready=true; e.rawUnavailable=false; runOrganization(e)
+    equal(e.manager:status().organizePending,false); equal(e.manager.paused,false)
+    equal(e.manager.organizeDone,1); equal(#e.moved,1); equal(#e.followPreparations,0)
+  end)
+end
+
+test('a pending organization builds its plan from the current windows once settling ends', function()
+  local e=organizationFixture(); e.manager.guardUntil=e.now+3
+  assert(e.manager:requestOrganization(e.keeper))
+  e:setLocation(e.moving,e.other.spaceID) -- The conflict disappears before planning.
+  e:advance(3.1); runOrganization(e)
+  equal(e.manager:status().organizePending,false); equal(e.manager.organizePlanned,0)
+  equal(e.moving.spaceID,e.other.spaceID); equal(#e.moved,0); equal(#e.added,0)
+end)
+
+for _, failure in ipairs({'exception','nil','false','boolean','string','number'}) do
+  test('occupancy treats a '..failure..' per-Space result as unknown and never as empty', function()
+    local e=organizationFixture(); local readSpace=hs.spaces.windowsForSpace
+    hs.spaces.windowsForSpace=function(id)
+      if id~=e.target.spaceID then return readSpace(id) end
+      if failure=='exception' then error('native Space query exception')
+      elseif failure=='nil' then return nil
+      elseif failure=='false' then return false
+      elseif failure=='boolean' then return true
+      elseif failure=='string' then return 'unavailable'
+      else return 0 end
+    end
+    local occupied=e.manager:occupancy()
+    equal(occupied[e.source.spaceID],true); equal(occupied[e.target.spaceID],nil)
+    equal(occupied[e.other.spaceID],false,'a successful empty array remains provably empty')
+    equal(e.manager.paused,false); equal(#e.moved,0); equal(#e.added,0)
+    assert(type(e.manager.occupancyError)=='string' and #e.manager.occupancyError>0)
+    hs.spaces.windowsForSpace=readSpace
+    equal(e.manager:occupancy()[e.target.spaceID],false)
+    equal(e.manager.occupancyError,nil,'a complete fresh read clears the transient error')
+  end)
+end
+
+test('a thrown CG snapshot read leaves occupancy unknown without pausing the manager', function()
+  local e=organizationFixture(); local readWindows=hs.window.list
+  hs.window.list=function() error('native CG query exception') end
+  local occupied=e.manager:occupancy()
+  equal(occupied[e.source.spaceID],nil); equal(occupied[e.target.spaceID],nil)
+  equal(e.manager.paused,false)
+  assert(type(e.manager.occupancyError)=='string' and #e.manager.occupancyError>0)
+  hs.window.list=readWindows
+  equal(e.manager:occupancy()[e.target.spaceID],false); equal(e.manager.occupancyError,nil)
+end)
+
+test('a native Space creation exception cancels one requested run and releases busy without retrying', function()
+  local e=organizationFixture({free=false}); local attempts=0
+  hs.spaces.addSpaceToScreen=function()
+    attempts=attempts+1
+    error('native Space creation exception')
+  end
+  assert(e.manager:requestOrganization(e.keeper)); runOrganization(e)
+  equal(attempts,1); equal(e.manager.busy,false); equal(e.manager.organizing,false)
+  equal(e.manager:status().organizePending,false); equal(e.manager.paused,false)
+  assert(type(e.manager.organizeMessage)=='string' and #e.manager.organizeMessage>0)
+  for _=1,4 do e:advance(1); e.manager:tick() end
+  equal(attempts,1); equal(#e.moved,0); equal(#e.added,0)
+  equal(#e.followPreparations,0); equal(e.keeper.spaceID,e.source.spaceID)
+  equal(e.moving.spaceID,e.source.spaceID)
+end)
+
+test('the organization-start callback fires once before the first move of an accepted batch', function()
+  local e=organizationFixture({multi=true}); local starts=0
+  e.context.organizeStarted=function()
+    starts=starts+1
+    equal(e.manager.organizing,true); equal(e.manager:status().organizePending,false)
+    equal(#e.moved,0,'hide the panel before any window operation starts')
+  end
+  assert(e.manager:requestOrganization(e.keeper)); equal(starts,0)
+  runOrganization(e)
+  equal(starts,1); equal(#e.moved,2); equal(e.manager.organizeDone,1)
+  e.manager:tick(); equal(starts,1)
+end)
+
+for _, outcome in ipairs({'no-op','timeout','rejection'}) do
+  test('the organization-start callback never hides the panel after '..outcome, function()
+    local e=organizationFixture(); local starts=0
+    e.context.organizeStarted=function() starts=starts+1 end
+    if outcome=='no-op' then
+      e:setLocation(e.moving,e.other.spaceID)
+      assert(e.manager:requestOrganization(e.keeper)); runOrganization(e)
+    elseif outcome=='timeout' then
+      e.manager.busy=true
+      assert(e.manager:requestOrganization(e.keeper)); e:advance(20.1); e.manager:tick()
+      e.manager.busy=false; e.manager:tick()
+    else
+      e.manager:pause(); equal(e.manager:requestOrganization(e.keeper),false)
+    end
+    equal(starts,0); equal(e.manager:status().organizePending,false)
+    equal(#e.moved,0); equal(#e.added,0)
+    assert(type(e.manager.organizeMessage)=='string' and #e.manager.organizeMessage>0)
+  end)
+end
+
+test('a pending request keeps ticking the active session so restoration can finish before organization', function()
+  local e=organizationFixture(); local restoring,ticks,starts=true,0,0
+  e.manager.session={isRestoring=function() return restoring end,
+    claims=function() return false end,cancelGroup=function() end,status=function() return {} end,
+    tick=function()
+      ticks=ticks+1
+      if ticks==2 then restoring=false end
+      return restoring
+    end}
+  e.context.organizeStarted=function() starts=starts+1; equal(restoring,false) end
+  assert(e.manager:requestOrganization(e.keeper))
+  e.manager:tick(); equal(ticks,1); equal(starts,0)
+  equal(e.manager:status().organizePending,true); equal(#e.moved,0)
+  e:advance(.5); e.manager:tick(); equal(ticks,2); equal(restoring,false)
+  equal(starts,0); equal(#e.moved,0)
+  runOrganization(e)
+  equal(starts,1); equal(e.manager:status().organizePending,false)
+  equal(e.manager.organizeDone,1); equal(#e.moved,1); equal(#e.followPreparations,0)
 end)
 
 print('Manager tests: ' .. passed .. ' passed, ' .. failed .. ' failed')
