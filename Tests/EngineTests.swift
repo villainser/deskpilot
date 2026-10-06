@@ -186,6 +186,18 @@ final class TestSystem: SystemAccessProtocol {
         check(enabling.creates == 1 && enabling.windows[0].spaceIDs == [101], "An earlier scheduled refresh does not consume the enable-automation retry")
         guarded.state.enabled = false
 
+        let initiallyHidden = TestSystem()
+        initiallyHidden.serverWindows = [WindowIdentity(pid: 42, windowID: 95)]
+        let revealed = make(initiallyHidden); revealed.state.enabled = false
+        revealed.toggleEnabled()
+        // WindowServer already knew this window before automation was enabled,
+        // but Accessibility only reveals it after visiting its desktop.
+        initiallyHidden.windows = [window(95, app: "com.google.Chrome", title: "Page - Google Chrome - Work")]
+        revealed.event(NSWorkspace.didActivateApplicationNotification.rawValue, pid: 42, windowID: nil)
+        await settle(revealed) { initiallyHidden.windows[0].spaceIDs == [101] }
+        check(initiallyHidden.creates == 1 && initiallyHidden.windows[0].spaceIDs == [101], "An existing window first exposed by Accessibility after enabling automation is still routed")
+        revealed.state.enabled = false
+
         let conflicting = TestSystem()
         conflicting.windows = [window(100, app: "com.google.Chrome", title: "Page - Google Chrome - Work")]
         let identity = make(conflicting)

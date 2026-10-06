@@ -1,5 +1,5 @@
 {
-  "version": "0.2.4",
+  "version": "0.2.5",
   "date": "2026-10-07",
   "platform": "macOS 27.0.1 / Apple Silicon",
   "build": "passed",
@@ -8,7 +8,7 @@
     "failed": 0
   },
   "engineChecks": {
-    "passed": 42,
+    "passed": 43,
     "failed": 0,
     "environment": "Actual routing engine with an injected simulated desktop service and synthetic Chrome profile catalog. No live application windows or user settings are accessed.",
     "coverage": [
@@ -24,7 +24,8 @@
       "Temporary Space snapshot failure recovers through a bounded retry",
       "Failed creation leaves windows untouched; failed movement pauses automation",
       "Failed movement retries reuse the already created desktop",
-      "A failed group move after a manual move preserves the last confirmed assignment"
+      "A failed group move after a manual move preserves the last confirmed assignment",
+      "Existing WindowServer windows first exposed by Accessibility after enabling automation enter the routing queue"
     ]
   },
   "iconVerification": {
@@ -104,6 +105,13 @@
       "Automation pause reason survives app activation and restart and is written after failure"
     ],
     "basis": "https://github.com/Hammerspoon/hammerspoon/issues/3897",
-    "liveVerification": "Pending creation, switching and automatic routing on the target Mac with 0.2.4"
+    "liveVerification": "In 0.2.4, the packaged GUI reported WindowManager, desktop count increased from six to seven, assignment count increased from five to six, and the completed operation reported Done without an error. The user then reported that subsequent windows were not routed; this does not establish end-to-end automatic routing."
+  },
+  "delayedWindowRegression": {
+    "reproducedBeforeFix": true,
+    "passedAfterFix": true,
+    "scenario": "WindowServer lists a Chrome window before automation is enabled. Accessibility exposes it later on application activation, without a new window-created event. The previous engine skipped it; the corrected engine creates a desktop, confirms movement, and records its profile assignment.",
+    "environment": "Real engine with a simulated system service",
+    "liveVerification": "Pending in 0.2.5"
   }
 }

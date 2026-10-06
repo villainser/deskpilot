@@ -54,6 +54,8 @@ import ServiceManagement
     private var displayGeometry = ""
     private var operationGeneration: Int?
     private var lastOwnMovement = Date.distantPast
+    private var lastRuntimeSnapshot: Data?
+    private var waitingForMissionControl = false
 
     init(dataURL: URL? = nil, system: SystemAccessProtocol = SystemAccess(), chromeProfilesURL: URL? = nil) {
         self.system = system
@@ -157,6 +159,8 @@ import ServiceManagement
 
     func refresh(full: Bool = false) {
         guard !locked else { return }
+        defer { writeRuntimeStatus(onlyIfChanged: true) }
+        waitingForMissionControl = false
         let previousTrust = trusted
         trusted = system.trusted
         if previousTrust != trusted { writeRuntimeStatus() }
@@ -187,6 +191,7 @@ import ServiceManagement
             knownServerWindows = serverWindows
             routingInbox.reconcile(live: serverWindows)
         }
+        let previouslyRead = Set(windows.map(\.identity))
         windows = raw.map { item in
             var item = item
             if item.appID == "com.google.Chrome" {
@@ -204,6 +209,14 @@ import ServiceManagement
                 if let profile { chromeBindings[key] = profile; item.group = item.appID + "::" + profile.id; item.profileName = profile.name; item.profileDirectory = profile.id }
             } else { item.group = item.appID }
             return item
+        }
+        // WindowServer may have listed an existing window before Accessibility
+        // exposes it (for example on an unvisited desktop). Its native ID is
+        // not new, but its first usable AX record still needs automatic routing.
+        if hasBaseline && state.enabled && !restoring {
+            for window in windows where !previouslyRead.contains(window.identity) {
+                routingInbox.enqueue(window.identity)
+            }
         }
         let live = Set(windows.filter { $0.appID == "com.google.Chrome" }.map { "\($0.pid):\($0.id)" })
         chromeBindings = chromeBindings.filter { live.contains($0.key) }
@@ -229,6 +242,7 @@ import ServiceManagement
             return
         }
         guard system.missionControlRoot() == nil else {
+            waitingForMissionControl = true
             if routingInbox.needsRetry() { schedule(delay: 0.5, full: true) }
             return
         }
@@ -326,7 +340,7 @@ import ServiceManagement
         writeRuntimeStatus()
     }
 
-    func writeRuntimeStatus() {
+    func writeRuntimeStatus(onlyIfChanged: Bool = false) {
         let report: [String: Any] = ["pid": getpid(), "applicationPath": Bundle.main.bundleURL.path,
                                    "accessibility": trusted, "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
                                    "chromeProfiles": chromeProfiles.count,
@@ -343,9 +357,19 @@ import ServiceManagement
                                    "automationEnabled": state.enabled,
                                    "automationPauseReason": state.automationPauseReason ?? "",
                                    "missionControlHost": system.missionControlHost ?? "Not detected yet",
+                                   "pendingWindows": routingInbox.pending.count,
+                                   "readyToRouteWindows": routingInbox.candidates(in: windows).count,
+                                   "waitingForMissionControl": waitingForMissionControl,
                                    "lastError": lastError ?? "",
                                    "eventCounts": eventCounts,
                                    "checkedAt": ISO8601DateFormatter().string(from: Date())]
+        // Event counters and timing alone must not cause a disk write on every
+        // move or resize. Record meaningful routing changes and explicit checks.
+        let volatile: Set<String> = ["checkedAt", "reads", "eventCounts", "chromeCatalogReadAttempts"]
+        let stable = report.filter { !volatile.contains($0.key) }
+        let snapshot = try? JSONSerialization.data(withJSONObject: stable, options: .sortedKeys)
+        if onlyIfChanged && snapshot == lastRuntimeSnapshot { return }
+        lastRuntimeSnapshot = snapshot
         let url = dataURL.deletingLastPathComponent().appendingPathComponent("runtime-status.json")
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
             try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

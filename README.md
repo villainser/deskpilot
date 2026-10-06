@@ -71,20 +71,20 @@ DeskPilot retains only profile names and directory identifiers already read with
 
 The app includes Apple's [other-application-data purpose message](https://developer.apple.com/documentation/bundleresources/information-property-list/nsappdatausagedescription) to explain its use of profile metadata when macOS asks for access. The purpose message does not grant access or repair a permission invalidated by a changed code signature.
 
-**Refresh and check access** updates the local runtime report with counts, file-read status and event types, without page titles or URLs. Completed operations and automation toggles also write their result, pause reason and last detected Mission Control host. Activating DeskPilot's own panel is excluded from managed-window events.
+**Refresh and check access** updates the local runtime report with counts, file-read status and event types, without page titles or URLs. Completed operations and automation toggles also write their result, pause reason and last detected Mission Control host. Meaningful changes in the routing queue, readable windows and Mission Control waiting state update the report automatically. Counter changes alone do not trigger disk writes. Activating DeskPilot's own panel is excluded from managed-window events.
 
 ## Reliability and privacy
 
 - A desktop assignment is saved only after macOS confirms the window's destination.
 - A failed automatic creation or movement pauses automation and preserves the reason across panel activation and app restart. Enabling automation explicitly clears the previous reason. Retrying a failed move reuses the desktop already created in that session.
-- Late native window IDs, delayed Chrome titles and windows created while another operation is running stay queued until they can be processed.
+- Late native window IDs, delayed Chrome titles and windows created while another operation is running stay queued until they can be processed. Existing windows whose Accessibility records first appear after automation is enabled also enter the queue, even if WindowServer already listed their IDs at startup.
 - Saved names take priority over temporary window titles. Clearing a custom name restores the app or profile name.
 - Settings stay on this Mac. No screenshots are captured and no network service is used by the app. Layouts store window-title hashes rather than full titles or tab URLs.
 - Settings are stored in `~/Library/Application Support/DeskPilot Native/state.json`. Invalid settings files are preserved rather than overwritten.
 
 ## Verification and limitations
 
-Version 0.2.4 is a development build. See [VERIFICATION.json](VERIFICATION.json) for the exact checks and remaining manual tests.
+Version 0.2.5 is a development build. See [VERIFICATION.json](VERIFICATION.json) for the exact checks and remaining manual tests.
 
 The local suite includes policy tests and tests of the real routing engine against a simulated desktop service. It covers desktop creation, app and Chrome grouping, late metadata, busy queues, failure recovery and automatic/custom names. These tests do not substitute for a live multi-display test.
 
