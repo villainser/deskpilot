@@ -13,6 +13,7 @@ protocol SystemAccessProtocol: AnyObject {
     var trusted: Bool { get }
     var canMove: Bool { get }
     var lastReadMilliseconds: Double { get }
+    var missionControlHost: String? { get }
     func start()
     func screens() -> [Display]
     func spaces(displays: [Display]) -> [Desktop]?
@@ -27,6 +28,10 @@ protocol SystemAccessProtocol: AnyObject {
     func endMove()
 }
 
+extension SystemAccessProtocol {
+    var missionControlHost: String? { nil }
+}
+
 final class SystemAccess: SystemAccessProtocol {
     var onEvent: ((String, Int32?, UInt32?) -> Void)?
     private var observers: [Int32: AXObserver] = [:]
@@ -36,6 +41,7 @@ final class SystemAccess: SystemAccessProtocol {
     var elements: [UInt32: AXUIElement] = [:]
     var readCount = 0
     var lastReadMilliseconds = 0.0
+    private(set) var missionControlHost: String?
 
     var trusted: Bool { AXIsProcessTrusted() }
     var canMove: Bool { DPCanMove() }
@@ -235,11 +241,24 @@ final class SystemAccess: SystemAccessProtocol {
         return nil
     }
 
+    static var missionControlHosts: [String] {
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
+            ? ["com.apple.WindowManager", "com.apple.dock"] : ["com.apple.dock", "com.apple.WindowManager"]
+    }
+
     func missionControlRoot() -> AXUIElement? {
-        guard trusted, let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else { return nil }
-        let root = AXUIElementCreateApplication(dock.processIdentifier)
-        AXUIElementSetMessagingTimeout(root, 0.08)
-        return find("mc", below: root)
+        guard trusted else { return nil }
+        for bundleID in Self.missionControlHosts {
+            for host in NSRunningApplication.runningApplications(withBundleIdentifier: bundleID) {
+                let root = AXUIElementCreateApplication(host.processIdentifier)
+                AXUIElementSetMessagingTimeout(root, 0.08)
+                if let live = MissionControlAccessibility.liveRoot(in: [root], identifier: { ax($0, kAXIdentifierAttribute) as? String }, children: axChildren) {
+                    missionControlHost = bundleID
+                    return live
+                }
+            }
+        }
+        return nil
     }
 
     @MainActor func missionControl(display: Display, select: Desktop? = nil, create: Bool = false) async throws {
@@ -254,7 +273,7 @@ final class SystemAccess: SystemAccessProtocol {
         var target: AXUIElement?
         for _ in 0..<20 {
             if let root = missionControlRoot() {
-                target = missionControlDisplay(display.systemID, below: root)
+                target = missionControlDisplay(display, below: root)
                 if target != nil { break }
             }
             try await Task.sleep(nanoseconds: 100_000_000)
@@ -274,13 +293,19 @@ final class SystemAccess: SystemAccessProtocol {
         }
     }
 
-    func missionControlDisplay(_ displayID: UInt32, below root: AXUIElement, depth: Int = 0) -> AXUIElement? {
-        if (ax(root, "AXDisplayID") as? NSNumber)?.uint32Value == displayID { return root }
-        guard depth < 3 else { return nil }
-        for child in axChildren(root) {
-            if let display = missionControlDisplay(displayID, below: child, depth: depth + 1) { return display }
-        }
-        return nil
+    func missionControlDisplay(_ display: Display, below root: AXUIElement) -> AXUIElement? {
+        let candidates = MissionControlAccessibility.displays(in: root, identifier: { ax($0, kAXIdentifierAttribute) as? String }, children: axChildren)
+        return MissionControlAccessibility.display(in: candidates, targetID: display.systemID, targetFrame: display.frame, displayID: { element in
+            if let number = ax(element, "AXDisplayID") as? NSNumber { return number.uint32Value }
+            if let string = ax(element, "AXDisplayID") as? String { return UInt32(string) }
+            return nil
+        }, frame: { element in
+            guard let p = ax(element, kAXPositionAttribute), CFGetTypeID(p) == AXValueGetTypeID(),
+                  let s = ax(element, kAXSizeAttribute), CFGetTypeID(s) == AXValueGetTypeID() else { return nil }
+            var position = CGPoint.zero, size = CGSize.zero
+            guard AXValueGetValue(p as! AXValue, .cgPoint, &position), AXValueGetValue(s as! AXValue, .cgSize, &size) else { return nil }
+            return CGRect(origin: position, size: size)
+        })
     }
 
     func escapeMissionControl() {

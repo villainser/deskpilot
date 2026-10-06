@@ -116,6 +116,42 @@ import Foundation
         let pairs = MissionControlLabelPolicy.paired(desktops: [moved, fullscreen], frames: [.zero, thumbnail], displayID: "laptop")
         check(pairs.count == 1 && pairs[0].0.id == "stable" && pairs[0].1 == thumbnail, "Fullscreen thumbnail preserves ordinal alignment without receiving a desktop badge")
         check(MissionControlLabelPolicy.paired(desktops: [moved, fullscreen], frames: [thumbnail], displayID: "laptop").isEmpty, "Changing Mission Control list does not label the wrong desktop")
+        final class MCNode {
+            let id: String
+            var screen: UInt32?
+            var frame: CGRect?
+            var children: [MCNode]
+            init(_ id: String, screen: UInt32? = nil, frame: CGRect? = nil, children: [MCNode] = []) {
+                self.id = id; self.screen = screen; self.frame = frame; self.children = children
+            }
+        }
+        let emptyDock = MCNode("Dock", children: [MCNode("mc")])
+        let mcScreen = MCNode("mc.display", screen: 1, frame: display.frame, children: [MCNode("mc.spaces", children: [MCNode("mc.spaces.list"), MCNode("mc.spaces.add")])])
+        let windowManager = MCNode("WindowManager", children: [mcScreen])
+        let mcRoot = MissionControlAccessibility.liveRoot(in: [emptyDock, windowManager], identifier: { $0.id }, children: { $0.children })
+        check(mcRoot === windowManager, "An empty Dock mc stub is skipped in favor of WindowManager's live display tree")
+        check(MissionControlAccessibility.liveRoot(in: [emptyDock], identifier: { $0.id }, children: { $0.children }) == nil, "An empty mc stub does not indefinitely block automatic routing")
+        let legacyDock = MCNode("Dock", children: [MCNode("mc", children: [mcScreen])])
+        check(MissionControlAccessibility.liveRoot(in: [legacyDock], identifier: { $0.id }, children: { $0.children }) === legacyDock, "The older Dock-hosted Mission Control tree remains supported")
+        let incomplete = MCNode("WindowManager", children: [MCNode("mc.display")])
+        check(MissionControlAccessibility.liveRoot(in: [incomplete], identifier: { $0.id }, children: { $0.children }) == nil, "A display without its Spaces controls is not ready for actions")
+        let noID = MCNode("mc.display", frame: external.frame)
+        func matched(_ candidates: [MCNode], _ target: Display) -> MCNode? {
+            MissionControlAccessibility.display(in: candidates, targetID: target.systemID, targetFrame: target.frame, displayID: { $0.screen }, frame: { $0.frame })
+        }
+        check(matched([mcScreen, noID], display) === mcScreen, "The native display ID selects the correct Mission Control container")
+        check(matched([mcScreen, noID], external) === noID, "Missing AXDisplayID falls back to the full display frame including menu bar and Dock")
+        let wrongID = MCNode("mc.display", screen: 99, frame: external.frame)
+        check(matched([wrongID], external) == nil, "Geometry never overrides a conflicting known display ID")
+        check(matched([noID, MCNode("mc.display", frame: external.frame)], external) == nil, "Ambiguous display geometry does not select a monitor by guessing")
+        let duplicateID = MCNode("mc.display", screen: 1, frame: external.frame)
+        check(matched([mcScreen, duplicateID], display) == nil, "Duplicate display IDs during a transition do not choose arbitrarily")
+        let shortFrame = MCNode("mc.display", frame: external.visibleFrame)
+        check(matched([shortFrame], external) == nil, "A visible-frame-only match cannot misidentify a full display")
+        let cycleMC = MCNode("cycle"); cycleMC.children = [cycleMC]
+        var mcReads = 0
+        _ = MissionControlAccessibility.displays(in: cycleMC, identifier: { $0.id }, children: { node in mcReads += 1; return node.children })
+        check(mcReads <= 7, "Mission Control discovery terminates on a cyclic tree")
         print("PASS: \(total) core checks")
     }
 }

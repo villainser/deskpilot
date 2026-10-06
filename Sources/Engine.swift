@@ -96,7 +96,7 @@ import ServiceManagement
         guardUntil = Date().addingTimeInterval(3)
         if state.enabled && state.automaticProfiles { handleTopology() }
         else { schedule(delay: 3.1) }
-        status = trusted ? (state.enabled ? "Automation enabled" : "Automation paused") : "Grant window management access"
+        status = automationStatus
     }
 
     func event(_ name: String, pid: Int32?, windowID: UInt32?) {
@@ -275,6 +275,18 @@ import ServiceManagement
 
     func fail(_ error: Error) { lastError = error.localizedDescription; status = error.localizedDescription }
 
+    private var automationStatus: String {
+        if !trusted { return "Grant window management access" }
+        if state.enabled { return "Automation enabled" }
+        return state.automationPauseReason.map { "Automation paused: \($0)" } ?? "Automation paused"
+    }
+
+    private func pauseAutomation(after error: Error) {
+        state.enabled = false
+        state.automationPauseReason = error.localizedDescription
+        save()
+    }
+
     func toggleEnabled() {
         guard operational else { return }
         // Permission may have changed in System Settings since the last scan.
@@ -282,6 +294,7 @@ import ServiceManagement
         writeRuntimeStatus()
         if !state.enabled && !trusted { requestAccessibility(); return }
         state.enabled.toggle(); generation += 1; routingInbox.clear(); launching.removeAll()
+        state.automationPauseReason = nil
         if !state.enabled { topologyTask?.cancel() }
         guardUntil = Date().addingTimeInterval(1)
         refresh(full: true)
@@ -289,6 +302,7 @@ import ServiceManagement
         schedule(delay: 1.1, full: true)
         status = state.enabled ? "Automation enabled" : "Automation paused"
         save()
+        writeRuntimeStatus()
     }
 
     func requestAccessibility() {
@@ -307,7 +321,7 @@ import ServiceManagement
         if retryChromeCatalog { loadChromeProfiles(force: true) }
         refresh(full: true)
         if !busy {
-            status = trusted ? (state.enabled ? "Automation enabled" : "Access granted · automation paused") : "Access is not granted to this copy of DeskPilot"
+            status = trusted ? automationStatus : "Access is not granted to this copy of DeskPilot"
         }
         writeRuntimeStatus()
     }
@@ -326,6 +340,9 @@ import ServiceManagement
                                    "chromeCatalogPath": chromeProfilesURL.path,
                                    "desktops": desktops.count, "displays": displays.count, "windows": windows.count,
                                    "reads": refreshes, "locked": locked, "status": status,
+                                   "automationEnabled": state.enabled,
+                                   "automationPauseReason": state.automationPauseReason ?? "",
+                                   "missionControlHost": system.missionControlHost ?? "Not detected yet",
                                    "lastError": lastError ?? "",
                                    "eventCounts": eventCounts,
                                    "checkedAt": ISO8601DateFormatter().string(from: Date())]
@@ -503,7 +520,7 @@ import ServiceManagement
             return
         }
         busy = true; lastError = nil; operationGeneration = generation
-        defer { operationGeneration = nil; busy = false; lastOwnMovement = Date(); schedule(full: true) }
+        defer { operationGeneration = nil; busy = false; lastOwnMovement = Date(); schedule(full: true); writeRuntimeStatus() }
         do { try await operation(); status = "Done" }
         catch { fail(error) }
     }
@@ -531,7 +548,7 @@ import ServiceManagement
                     self.refresh(full: true)
                 }
             } catch {
-                self.state.enabled = false; self.save()
+                self.pauseAutomation(after: error)
                 throw error
             }
         }
@@ -554,8 +571,9 @@ import ServiceManagement
                 if locked || token != generation { break }
             }
             guard confirmed else {
-                state.enabled = false; save()
-                throw AppError.message("macOS did not confirm the window move. Automation has been paused.")
+                let error = AppError.message("macOS did not confirm the window move. Automation has been paused.")
+                pauseAutomation(after: error)
+                throw error
             }
             previous[window.id] = (window.pid, desktop.systemID)
         }

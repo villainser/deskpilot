@@ -27,8 +27,8 @@ cat > "$DESKPILOT_APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleName</key><string>DeskPilot</string>
 <key>CFBundleDisplayName</key><string>DeskPilot</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
-<key>CFBundleVersion</key><string>7</string>
-<key>CFBundleShortVersionString</key><string>0.2.3</string>
+<key>CFBundleVersion</key><string>8</string>
+<key>CFBundleShortVersionString</key><string>0.2.4</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSUIElement</key><false/>

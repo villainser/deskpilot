@@ -120,6 +120,7 @@ struct LayoutProfile: Codable, Identifiable {
 struct AppState: Codable {
     var schema = 1
     var enabled = false
+    var automationPauseReason: String?
     var automaticProfiles = true
     var launchMissingApps = false
     var names: [String: String] = [:]

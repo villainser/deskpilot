@@ -1,6 +1,6 @@
 import AppKit
 
-// Read Dock's Space thumbnail geometry and display click-through name badges.
+// Read the system's Space thumbnail geometry and display click-through badges.
 // No Dock injection, system preference patching or screenshot capture is used.
 @MainActor final class MissionControlNames {
     static let preference = "showMissionControlNames"
@@ -10,8 +10,7 @@ import AppKit
     private var panels: [String: NSPanel] = [:]
     private var labels: [String: NSTextField] = [:]
     private var timer: Timer?
-    private var dockObserver: AXObserver?
-    private var dockPID: Int32?
+    private var hostObservers: [Int32: AXObserver] = [:]
     private var workspaceTokens: [NSObjectProtocol] = []
     private var distributedTokens: [NSObjectProtocol] = []
     private var preferenceToken: NSObjectProtocol?
@@ -54,8 +53,8 @@ import AppKit
 
     func stop() {
         timer?.invalidate(); timer = nil; hide()
-        if let observer = dockObserver { CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes) }
-        dockObserver = nil; dockPID = nil
+        for observer in hostObservers.values { CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes) }
+        hostObservers.removeAll()
         for token in workspaceTokens { NSWorkspace.shared.notificationCenter.removeObserver(token) }
         for token in distributedTokens { DistributedNotificationCenter.default().removeObserver(token) }
         if let token = preferenceToken { NotificationCenter.default.removeObserver(token) }
@@ -76,31 +75,34 @@ import AppKit
         RunLoop.main.add(next, forMode: .common)
     }
 
-    private func observeDock() {
-        guard let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first,
-              dockPID != dock.processIdentifier else { return }
-        if let observer = dockObserver { CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes) }
-        dockObserver = nil; dockPID = nil
-        var observer: AXObserver?
+    private func observeHosts() {
+        let hosts = SystemAccess.missionControlHosts.flatMap { NSRunningApplication.runningApplications(withBundleIdentifier: $0) }
+        let live = Set(hosts.map(\.processIdentifier))
+        for pid in Array(hostObservers.keys) where !live.contains(pid) {
+            if let observer = hostObservers.removeValue(forKey: pid) { CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes) }
+        }
         let callback: AXObserverCallback = { _, _, _, context in
             guard let context else { return }
             let owner = Unmanaged<MissionControlNames>.fromOpaque(context).takeUnretainedValue()
             Task { @MainActor [weak owner] in owner?.schedule(after: 0.08) }
         }
-        guard AXObserverCreate(dock.processIdentifier, callback, &observer) == .success, let observer else { return }
-        let app = AXUIElementCreateApplication(dock.processIdentifier)
-        AXUIElementSetMessagingTimeout(app, 0.08)
-        for name in [kAXWindowCreatedNotification, kAXFocusedUIElementChangedNotification, kAXLayoutChangedNotification] {
-            AXObserverAddNotification(observer, app, name as CFString, Unmanaged.passUnretained(self).toOpaque())
+        for host in hosts where hostObservers[host.processIdentifier] == nil {
+            var observer: AXObserver?
+            guard AXObserverCreate(host.processIdentifier, callback, &observer) == .success, let observer else { continue }
+            let app = AXUIElementCreateApplication(host.processIdentifier)
+            AXUIElementSetMessagingTimeout(app, 0.08)
+            for name in [kAXWindowCreatedNotification, kAXFocusedUIElementChangedNotification, kAXLayoutChangedNotification] {
+                AXObserverAddNotification(observer, app, name as CFString, Unmanaged.passUnretained(self).toOpaque())
+            }
+            CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+            hostObservers[host.processIdentifier] = observer
         }
-        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
-        dockObserver = observer; dockPID = dock.processIdentifier
     }
 
     private func update() {
         guard enabled, !locked else { hide(); return }
         guard access.trusted else { hide(); schedule(after: 1.5); return }
-        observeDock()
+        observeHosts()
         guard let root = access.missionControlRoot() else {
             hide(); schedule(after: 1.5); return
         }
@@ -112,7 +114,7 @@ import AppKit
         let primaryHeight = NSScreen.screens.first?.frame.maxY ?? 0
         for display in displays {
             guard let screen = NSScreen.screens.first(where: { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == display.systemID }),
-                  let container = access.missionControlDisplay(display.systemID, below: root),
+                  let container = access.missionControlDisplay(display, below: root),
                   let list = access.find("mc.spaces.list", below: container) else { continue }
             let entries = axChildren(list)
             let frames = entries.map { self.frame($0) ?? .zero }

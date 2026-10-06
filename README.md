@@ -16,7 +16,9 @@ A native macOS desktop manager built with Swift, SwiftUI and AppKit. Give each a
 
 Custom desktop names appear in DeskPilot, the menu bar and optional Mission Control badges. The badges are a click-through visual overlay; Apple's underlying system labels are unchanged. No separate naming permission is needed.
 
-**Settings → Show names in Mission Control** controls the badges and is enabled by default. Dock events wake the detector, with a fallback check every 1.5 seconds while idle and geometry updates every 0.25 seconds while Mission Control is visible. Disabling the feature stops these checks. Badges use the exposed thumbnail geometry and Space identities; if the thumbnail list changes or geometry is unavailable, names are hidden instead of placed by guesswork. Empty, unnamed desktops and fullscreen apps do not receive badges.
+**Settings → Show names in Mission Control** controls the badges and is enabled by default. WindowManager and Dock events wake the detector, with a fallback check every 1.5 seconds while idle and geometry updates every 0.25 seconds while Mission Control is visible. Disabling the feature stops these checks. Badges use the exposed thumbnail geometry and Space identities; if the thumbnail list changes or geometry is unavailable, names are hidden instead of placed by guesswork. Empty, unnamed desktops and fullscreen apps do not receive badges.
+
+On macOS 27, Mission Control discovery reads WindowManager first and falls back to the Dock; earlier systems use the opposite order. An empty `mc` group is ignored. A display is matched by its native ID or a unique full-screen geometry match when the ID is absent. This shared discovery is used by desktop creation, switching, routing guards and name badges. The macOS 27 hierarchy change is documented in this [compatibility report](https://github.com/Hammerspoon/hammerspoon/issues/3897).
 
 ## Build
 
@@ -69,12 +71,12 @@ DeskPilot retains only profile names and directory identifiers already read with
 
 The app includes Apple's [other-application-data purpose message](https://developer.apple.com/documentation/bundleresources/information-property-list/nsappdatausagedescription) to explain its use of profile metadata when macOS asks for access. The purpose message does not grant access or repair a permission invalidated by a changed code signature.
 
-**Refresh and check access** updates the local runtime report with counts, file-read status and event types, without page titles or URLs. Activating DeskPilot's own panel is excluded from managed-window events.
+**Refresh and check access** updates the local runtime report with counts, file-read status and event types, without page titles or URLs. Completed operations and automation toggles also write their result, pause reason and last detected Mission Control host. Activating DeskPilot's own panel is excluded from managed-window events.
 
 ## Reliability and privacy
 
 - A desktop assignment is saved only after macOS confirms the window's destination.
-- A failed automatic creation or movement pauses automation. Retrying a failed move reuses the desktop already created in that session.
+- A failed automatic creation or movement pauses automation and preserves the reason across panel activation and app restart. Enabling automation explicitly clears the previous reason. Retrying a failed move reuses the desktop already created in that session.
 - Late native window IDs, delayed Chrome titles and windows created while another operation is running stay queued until they can be processed.
 - Saved names take priority over temporary window titles. Clearing a custom name restores the app or profile name.
 - Settings stay on this Mac. No screenshots are captured and no network service is used by the app. Layouts store window-title hashes rather than full titles or tab URLs.
@@ -82,7 +84,7 @@ The app includes Apple's [other-application-data purpose message](https://develo
 
 ## Verification and limitations
 
-Version 0.2.3 is a development build. See [VERIFICATION.json](VERIFICATION.json) for the exact checks and remaining manual tests.
+Version 0.2.4 is a development build. See [VERIFICATION.json](VERIFICATION.json) for the exact checks and remaining manual tests.
 
 The local suite includes policy tests and tests of the real routing engine against a simulated desktop service. It covers desktop creation, app and Chrome grouping, late metadata, busy queues, failure recovery and automatic/custom names. These tests do not substitute for a live multi-display test.
 

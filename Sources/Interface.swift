@@ -77,6 +77,12 @@ struct RootView: View {
                     HStack(alignment: .top) { Image(systemName: "exclamationmark.triangle"); Text(error).font(.callout); Spacer(); Button { engine.lastError = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain) }
                         .padding(13).background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10)).padding(.horizontal, 26).padding(.bottom, 12)
                 }
+                if !engine.state.enabled, let reason = engine.state.automationPauseReason, reason != engine.lastError {
+                    Text("Automation paused: \(reason)").font(.callout)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(13)
+                        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                        .padding(.horizontal, 26).padding(.bottom, 12)
+                }
                 ScrollView {
                     Group {
                         switch ui.section {

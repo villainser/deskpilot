@@ -1,14 +1,14 @@
 {
-  "version": "0.2.3",
+  "version": "0.2.4",
   "date": "2026-10-07",
   "platform": "macOS 27.0.1 / Apple Silicon",
   "build": "passed",
   "coreChecks": {
-    "passed": 51,
+    "passed": 62,
     "failed": 0
   },
   "engineChecks": {
-    "passed": 38,
+    "passed": 42,
     "failed": 0,
     "environment": "Actual routing engine with an injected simulated desktop service and synthetic Chrome profile catalog. No live application windows or user settings are accessed.",
     "coverage": [
@@ -36,7 +36,7 @@
     "codeSignature": "passed"
   },
   "notYetVerified": [
-    "Chrome catalog access after selecting Local State in the system file picker",
+    "Chrome catalog permission and recognition after upgrading to this packaged build",
     "Mission Control badge visibility, geometry and resource use on the target Mac",
     "Live Chrome profile recognition and automatic routing in this build",
     "Mission Control desktop creation and switching on the target system in this build",
@@ -64,7 +64,7 @@
       "Changing thumbnail list and missing geometry do not produce guessed positions"
     ]
   },
-  "resourceBehavior": "Window routing remains event-based. Mission Control badges have Dock notifications plus fallback checks every 1.5 seconds while idle and 0.25 seconds while visible. Disabling badges stops those checks.",
+  "resourceBehavior": "Window routing remains event-based. Mission Control badges observe WindowManager and Dock with fallback checks every 1.5 seconds while idle and 0.25 seconds while visible. Disabling badges stops those checks.",
   "chromeCatalogChecks": {
     "passed": true,
     "coverage": [
@@ -83,7 +83,27 @@
     ],
     "bookmarkTestContext": "Synthetic files in a restricted test process. Minimal bookmarks passed; the sandbox rejected security-scope issuance, so the system file picker grant still needs GUI verification.",
     "liveFinding": "The packaged GUI reported a denied Chrome catalog read. App-specific macOS logs also reported a code-requirement mismatch for SystemPolicyAppDataDetailed after development rebuilds. A later report came from an older app copy.",
-    "liveReconnection": "Not confirmed. The user reported zero after attempting the 0.2.2 connection flow; no saved bookmark was present. The 0.2.3 file picker and permission grant still need live verification."
+    "liveReconnection": "The user confirmed profile recognition in 0.2.3; its runtime reported a readable catalog with two profiles and later two recognized native Chrome windows out of three. This does not establish recognition of every window or post-upgrade permission."
   },
-  "codeSigning": "Packaged build uses an ad hoc signature. An existing stable signing identity can be provided with DESKPILOT_SIGNING_IDENTITY for development. No privacy settings or signing certificates were changed."
+  "codeSigning": "Packaged build uses an ad hoc signature. An existing stable signing identity can be provided with DESKPILOT_SIGNING_IDENTITY for development. No privacy settings or signing certificates were changed.",
+  "liveWindowMovement": {
+    "version": "0.2.3",
+    "result": "User confirmed moving one recognized Chrome profile to an existing desktop; its assignment was subsequently present in the application settings. The engine only saves that assignment after checking the native destination.",
+    "automaticCreation": "Not confirmed; the user reported that automatic creation and routing did not work."
+  },
+  "missionControlDiscoveryChecks": {
+    "passed": true,
+    "environment": "Synthetic accessibility trees and monitor geometry; no live Mission Control UI inspection",
+    "coverage": [
+      "WindowManager-hosted mc.display is discovered even when Dock exposes an empty mc group",
+      "Older Dock-hosted hierarchy remains supported",
+      "An empty mc stub does not count as visible Mission Control and block routing",
+      "Native display IDs and unique full display geometry are matched",
+      "Conflicting or duplicate IDs, ambiguous geometry and partial trees are rejected",
+      "Cyclic traversal is bounded",
+      "Automation pause reason survives app activation and restart and is written after failure"
+    ],
+    "basis": "https://github.com/Hammerspoon/hammerspoon/issues/3897",
+    "liveVerification": "Pending creation, switching and automatic routing on the target Mac with 0.2.4"
+  }
 }

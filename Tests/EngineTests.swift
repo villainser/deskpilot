@@ -132,6 +132,12 @@ final class TestSystem: SystemAccessProtocol {
         let retry = make(failed)
         await retry.routeNew(retry.windows)
         check(!retry.state.enabled && retry.state.assignments.isEmpty, "Failed move pauses automation without claiming assignment success")
+        retry.checkAccessibility()
+        check(retry.state.automationPauseReason?.contains("Simulated move failure") == true && retry.status.contains("Simulated move failure"), "Returning to the app keeps the automatic pause reason visible")
+        let failureReport = try JSONSerialization.jsonObject(with: Data(contentsOf: retry.dataURL.deletingLastPathComponent().appendingPathComponent("runtime-status.json"))) as! [String: Any]
+        check(failureReport["automationEnabled"] as? Bool == false && (failureReport["automationPauseReason"] as? String)?.contains("Simulated move failure") == true, "A failed automatic operation immediately records its paused state and reason")
+        let restartedFailure = Engine(dataURL: retry.dataURL, system: TestSystem(), chromeProfilesURL: chrome)
+        check(restartedFailure.state.automationPauseReason == retry.state.automationPauseReason, "The reason for pausing automation survives app restart")
         failed.failMove = false; retry.state.enabled = true
         await retry.routeNew(retry.windows)
         check(failed.creates == 1 && failed.windows[0].spaceIDs == [101], "Retry reuses the created desktop instead of making duplicates")
@@ -172,8 +178,10 @@ final class TestSystem: SystemAccessProtocol {
 
         let enabling = TestSystem(); enabling.windows = [window(90)]
         let guarded = make(enabling); guarded.state.enabled = false
+        guarded.state.automationPauseReason = "Previous creation failure"
         guarded.schedule(delay: 0.05, full: true)
         guarded.toggleEnabled()
+        check(guarded.state.automationPauseReason == nil, "Explicitly enabling automation clears the previous pause reason")
         await settle(guarded) { enabling.windows[0].spaceIDs == [101] }
         check(enabling.creates == 1 && enabling.windows[0].spaceIDs == [101], "An earlier scheduled refresh does not consume the enable-automation retry")
         guarded.state.enabled = false
