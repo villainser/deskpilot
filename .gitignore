@@ -10,6 +10,7 @@ DeskPilot-settings*.json
 /dist/
 /build/
 /native/bin/
+/macos/.build/
 .DS_Store
 
 # Local credentials and signing identities never belong in source control.

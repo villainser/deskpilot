@@ -1,0 +1,239 @@
+import AppKit
+import ApplicationServices
+
+func ax(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
+    return value
+}
+func axChildren(_ element: AXUIElement) -> [AXUIElement] { ax(element, kAXChildrenAttribute) as? [AXUIElement] ?? [] }
+
+final class SystemAccess {
+    var onEvent: ((String, Int32?, UInt32?) -> Void)?
+    private var observers: [Int32: AXObserver] = [:]
+    private var tokens: [NSObjectProtocol] = []
+    private var observedWindows = Set<String>()
+    private var cache: [Int32: [WindowInfo]] = [:]
+    var elements: [UInt32: AXUIElement] = [:]
+    var readCount = 0
+    var lastReadMilliseconds = 0.0
+
+    var trusted: Bool { AXIsProcessTrusted() }
+    var canMove: Bool { DPCanMove() }
+
+    func start() {
+        let nc = NSWorkspace.shared.notificationCenter
+        for event in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification,
+                      NSWorkspace.didActivateApplicationNotification, NSWorkspace.activeSpaceDidChangeNotification,
+                      NSWorkspace.didWakeNotification, NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+            tokens.append(nc.addObserver(forName: event, object: nil, queue: .main) { [weak self] note in
+                let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                if note.name == NSWorkspace.didTerminateApplicationNotification, let pid = app?.processIdentifier { self?.remove(pid) }
+                self?.attachObservers()
+                self?.onEvent?(note.name.rawValue, app?.processIdentifier, nil)
+            })
+        }
+        tokens.append(NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.onEvent?("displays", nil, nil)
+        })
+        for name in ["com.apple.screenIsLocked", "com.apple.screenIsUnlocked"] {
+            tokens.append(DistributedNotificationCenter.default().addObserver(forName: .init(name), object: nil, queue: .main) { [weak self] note in self?.onEvent?(note.name.rawValue, nil, nil) })
+        }
+        attachObservers()
+    }
+
+    func attachObservers() {
+        guard trusted else { return }
+        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular && app.processIdentifier != getpid() {
+            let pid = app.processIdentifier
+            guard observers[pid] == nil else { continue }
+            var observer: AXObserver?
+            let callback: AXObserverCallback = { _, element, notification, context in
+                guard let context else { return }
+                let owner = Unmanaged<SystemAccess>.fromOpaque(context).takeUnretainedValue()
+                var pid: pid_t = 0
+                AXUIElementGetPid(element, &pid)
+                let id = DPWindowID(element)
+                owner.onEvent?(notification as String, pid, id == 0 ? nil : id)
+            }
+            guard AXObserverCreate(pid, callback, &observer) == .success, let observer else { continue }
+            observers[pid] = observer
+            let root = AXUIElementCreateApplication(pid)
+            AXUIElementSetMessagingTimeout(root, 0.3)
+            for name in [kAXWindowCreatedNotification, kAXFocusedWindowChangedNotification, kAXApplicationHiddenNotification, kAXApplicationShownNotification] {
+                AXObserverAddNotification(observer, root, name as CFString, Unmanaged.passUnretained(self).toOpaque())
+            }
+            CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+        }
+    }
+
+    private func remove(_ pid: Int32) {
+        if let observer = observers.removeValue(forKey: pid) { CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes) }
+        for item in cache.removeValue(forKey: pid) ?? [] { elements[item.id] = nil; observedWindows.remove("\(pid):\(item.id)") }
+    }
+
+    func screens() -> [Display] {
+        let primaryHeight = NSScreen.screens.first?.frame.maxY ?? 0
+        return NSScreen.screens.compactMap { screen in
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+                  let uuid = CGDisplayCreateUUIDFromDisplayID(number.uint32Value)?.takeRetainedValue() else { return nil }
+            let id = CFUUIDCreateString(nil, uuid) as String
+            let visible = CGRect(x: screen.visibleFrame.minX, y: primaryHeight - screen.visibleFrame.maxY, width: screen.visibleFrame.width, height: screen.visibleFrame.height)
+            return Display(id: id, systemID: number.uint32Value, name: screen.localizedName, builtIn: CGDisplayIsBuiltin(number.uint32Value) != 0,
+                           frame: CGDisplayBounds(number.uint32Value), visibleFrame: visible)
+        }.sorted { $0.frame.minX < $1.frame.minX }
+    }
+
+    func spaces(displays: [Display]) -> [Desktop]? {
+        guard let raw = DPSpaces() as? [[String: Any]] else { return nil }
+        var result: [Desktop] = []
+        for display in raw {
+            guard let displayID = display["Display Identifier"] as? String,
+                  let rows = display["Spaces"] as? [[String: Any]] else { continue }
+            let mappedDisplay = displayID == "Main" ? displays.first?.id ?? displayID : displayID
+            let current = display["Current Space"] as? [String: Any]
+            let active = (current?["id64"] as? NSNumber)?.uint64Value ?? (current?["ManagedSpaceID"] as? NSNumber)?.uint64Value
+            for (index, row) in rows.enumerated() {
+                guard let number = (row["id64"] ?? row["ManagedSpaceID"]) as? NSNumber else { continue }
+                let uuid = row["uuid"] as? String
+                let key = uuid.flatMap { $0.isEmpty ? nil : $0 } ?? "session:\(mappedDisplay):\(number)"
+                result.append(Desktop(id: key, systemID: number.uint64Value, displayID: mappedDisplay, ordinal: index,
+                                      fullScreen: (row["type"] as? NSNumber)?.intValue != 0, active: active == number.uint64Value))
+            }
+        }
+        return result.isEmpty ? nil : result
+    }
+
+    func readWindows(dirty: Set<Int32>? = nil) -> [WindowInfo] {
+        let began = ProcessInfo.processInfo.systemUptime
+        readCount += 1
+        attachObservers()
+        let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular && $0.processIdentifier != getpid() }
+        let running = Set(apps.map(\.processIdentifier))
+        for pid in Array(cache.keys) where !running.contains(pid) { remove(pid) }
+        for app in apps where dirty == nil || dirty!.contains(app.processIdentifier) || cache[app.processIdentifier] == nil {
+            let pid = app.processIdentifier, root = AXUIElementCreateApplication(app.processIdentifier)
+            AXUIElementSetMessagingTimeout(root, 0.3)
+            guard let windows = ax(root, kAXWindowsAttribute) as? [AXUIElement] else { continue }
+            var records: [WindowInfo] = []
+            for window in windows {
+                let id = DPWindowID(window)
+                guard id > 0, ax(window, kAXSubroleAttribute) as? String == kAXStandardWindowSubrole else { continue }
+                elements[id] = window
+                var point = CGPoint.zero, size = CGSize.zero
+                if let value = ax(window, kAXPositionAttribute), CFGetTypeID(value) == AXValueGetTypeID() { AXValueGetValue(value as! AXValue, .cgPoint, &point) }
+                if let value = ax(window, kAXSizeAttribute), CFGetTypeID(value) == AXValueGetTypeID() { AXValueGetValue(value as! AXValue, .cgSize, &size) }
+                let spaces = (DPWindowSpaces(id) as? [NSNumber] ?? []).map(\.uint64Value)
+                records.append(WindowInfo(id: id, pid: pid, appID: app.bundleIdentifier ?? app.bundleURL?.path ?? "pid:\(pid)",
+                                          appName: app.localizedName ?? "Aplikacja", title: ax(window, kAXTitleAttribute) as? String ?? "",
+                                          frame: CGRect(origin: point, size: size), spaceIDs: spaces,
+                                          minimized: ax(window, kAXMinimizedAttribute) as? Bool ?? false))
+                let identity = "\(pid):\(id)"
+                if !observedWindows.contains(identity), let observer = observers[pid] {
+                    for name in [kAXMovedNotification, kAXResizedNotification, kAXTitleChangedNotification, kAXUIElementDestroyedNotification, kAXWindowMiniaturizedNotification, kAXWindowDeminiaturizedNotification] {
+                        AXObserverAddNotification(observer, window, name as CFString, Unmanaged.passUnretained(self).toOpaque())
+                    }
+                    observedWindows.insert(identity)
+                }
+            }
+            // A missing AX window can be inaccessible on an unvisited desktop.
+            // Retain it only while WindowServer still confirms its identity.
+            let nowIDs = Set(records.map(\.id))
+            for old in cache[pid] ?? [] where !nowIDs.contains(old.id) {
+                if let spaces = DPWindowSpaces(old.id) as? [NSNumber], !spaces.isEmpty {
+                    var kept = old
+                    kept = WindowInfo(id: old.id, pid: old.pid, appID: old.appID, appName: old.appName, title: old.title, frame: old.frame,
+                                      spaceIDs: spaces.map(\.uint64Value), minimized: old.minimized)
+                    records.append(kept)
+                } else { elements[old.id] = nil; observedWindows.remove("\(pid):\(old.id)") }
+            }
+            cache[pid] = records
+        }
+        lastReadMilliseconds = (ProcessInfo.processInfo.systemUptime - began) * 1000
+        return cache.values.flatMap { $0 }.sorted { $0.id < $1.id }
+    }
+
+    func occupancy() -> [UInt64: Set<UInt32>]? {
+        guard let descriptions = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] else { return nil }
+        var map: [UInt64: Set<UInt32>] = [:]
+        for row in descriptions {
+            guard (row[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  let id = (row[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+                  (row[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value != getpid() else { continue }
+            guard let locations = DPWindowSpaces(id) as? [NSNumber] else { return nil }
+            for space in locations { map[space.uint64Value, default: []].insert(id) }
+        }
+        return map
+    }
+
+    func setFrame(_ rect: CGRect, windowID: UInt32) -> Bool {
+        guard let element = elements[windowID] else { return false }
+        var position = rect.origin, size = rect.size
+        guard let p = AXValueCreate(.cgPoint, &position), let s = AXValueCreate(.cgSize, &size) else { return false }
+        let resize = AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, s)
+        let move = AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, p)
+        return move == .success && resize == .success
+    }
+
+    func focusedWindowID() -> UInt32? {
+        guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != getpid(),
+              let value = ax(AXUIElementCreateApplication(app.processIdentifier), kAXFocusedWindowAttribute), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        let id = DPWindowID(value as! AXUIElement)
+        return id == 0 ? nil : id
+    }
+
+    func find(_ id: String, below root: AXUIElement, depth: Int = 0) -> AXUIElement? {
+        if ax(root, kAXIdentifierAttribute) as? String == id { return root }
+        guard depth < 6 else { return nil }
+        for child in axChildren(root) { if let match = find(id, below: child, depth: depth + 1) { return match } }
+        return nil
+    }
+
+    func missionControlRoot() -> AXUIElement? {
+        guard trusted, let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else { return nil }
+        return find("mc", below: AXUIElementCreateApplication(dock.processIdentifier))
+    }
+
+    @MainActor func missionControl(display: Display, select: Desktop? = nil, create: Bool = false) async throws {
+        guard trusted else { throw AppError.message("Nadaj aplikacji uprawnienie Dostępność.") }
+        let alreadyOpen = missionControlRoot() != nil
+        if !alreadyOpen {
+            let url = URL(fileURLWithPath: "/System/Applications/Mission Control.app")
+            let config = NSWorkspace.OpenConfiguration()
+            try await NSWorkspace.shared.openApplication(at: url, configuration: config)
+        }
+        var target: AXUIElement?
+        for _ in 0..<20 {
+            if let root = missionControlRoot() {
+                target = axChildren(root).first { (ax($0, "AXDisplayID") as? NSNumber)?.uint32Value == display.systemID }
+                if target != nil { break }
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        guard let target else { throw AppError.message("Mission Control nie udostępnił wybranego monitora.") }
+        try await Task.sleep(nanoseconds: 180_000_000)
+        if create {
+            guard let button = find("mc.spaces.add", below: target), AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else { throw AppError.message("Nie udało się utworzyć biurka. Sprawdź limit biurek macOS.") }
+            try await Task.sleep(nanoseconds: 250_000_000)
+            if !alreadyOpen { escapeMissionControl() }
+        } else if let selected = select {
+            guard let list = find("mc.spaces.list", below: target) else { throw AppError.message("Brak listy biurek w Mission Control.") }
+            let buttons = axChildren(list)
+            // Re-check native identity before acting on a position.
+            guard let current = spaces(displays: screens())?.first(where: { $0.id == selected.id }), current.displayID == display.id,
+                  current.ordinal < buttons.count else { throw AppError.message("Kolejność biurek uległa zmianie. Ponów przejście.") }
+            guard AXUIElementPerformAction(buttons[current.ordinal], kAXPressAction as CFString) == .success else { throw AppError.message("macOS odmówił przejścia na biurko.") }
+        }
+    }
+
+    func escapeMissionControl() {
+        guard missionControlRoot() != nil else { return }
+        CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: true)?.post(tap: .cghidEventTap)
+        CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: false)?.post(tap: .cghidEventTap)
+    }
+}
+
+enum AppError: LocalizedError {
+    case message(String)
+    var errorDescription: String? { if case let .message(text) = self { return text }; return nil }
+}

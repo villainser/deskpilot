@@ -1,0 +1,62 @@
+{
+  "version": "0.1.2",
+  "date": "2026-10-06",
+  "platform": "macOS 27.0.1 / Apple Silicon",
+  "build": "passed",
+  "coreChecks": {
+    "passed": 22,
+    "failed": 0
+  },
+  "diagnostic": {
+    "accessibility": true,
+    "displays": 1,
+    "spaces": 6,
+    "moveSymbolsAvailable": true,
+    "context": "Tool-launched diagnostic process; does not prove GUI application permission"
+  },
+  "windowMove": {
+    "passed": true,
+    "outboundConfirmed": true,
+    "returnConfirmed": true,
+    "onlyOwnTestWindow": true,
+    "context": "Tool-launched own-window integration check"
+  },
+  "startupSmoke": "passed",
+  "notYetVerified": [
+    "Full profile restore with multiple external displays",
+    "Disconnect/reconnect on target monitor setup",
+    "Full automation resource benchmark and comparison with Hammerspoon"
+  ],
+  "initialProcessSamples": {
+    "intervalSeconds": 20,
+    "rssKiB": [
+      12912,
+      34880
+    ],
+    "cpuTimeSeconds": [
+      4.59,
+      4.79
+    ],
+    "automation": "paused",
+    "isolatedIdleBenchmark": false
+  },
+  "guiVerification": {
+    "version": "0.1.1",
+    "accessibility": true,
+    "windowReadVisible": true,
+    "automationEnabled": true,
+    "permissionSurvivesRestart": true,
+    "quitButtonTerminatesProcess": true,
+    "secondLaunchKeepsSingleEngine": true,
+    "finalVisualCheck": "passed"
+  },
+  "iconVerification": {
+    "source": "Resources/AppIcon.png",
+    "providedBy": "project owner",
+    "standardAndRetinaSizes": true,
+    "containerValidation": "passed",
+    "bundleReference": "AppIcon",
+    "visualPreview": "passed",
+    "codeSignature": "passed"
+  }
+}

@@ -1,4 +1,20 @@
-# DeskPilot 2 — biurka dla aplikacji i profili Chrome
+# DeskPilot — biurka dla aplikacji i profili Chrome
+
+## DeskPilot Native — samodzielna aplikacja macOS
+
+Nowa aplikacja SwiftUI/AppKit jest w katalogu **[macos/](macos/README.md)**. Nie wymaga Hammerspoona ani WebKit. Zachowuje prawdziwe Spaces i Mission Control, zarządza przypisaniami aplikacji i rozpoznanych profili Chrome, zapisuje układy monitorów oraz pozwala układać okna obok siebie. Ma ikonę w Docku, menu na pasku systemowym i przycisk całkowitego zakończenia.
+
+```sh
+sh macos/build.sh
+sh macos/test.sh
+open "macos/.build/DeskPilot Native.app"
+```
+
+Wymagane: Apple Silicon, macOS 14+ i Apple Command Line Tools. Jest to wersja rozwojowa 0.1.2; testy reguł oraz wskazane próby na macOS 27.0.1 opisano w [instrukcji](macos/README.md) i [raporcie weryfikacji](macos/VERIFICATION.json). Pełne przywracanie układów z monitorami zewnętrznymi i porównanie zużycia zasobów nadal wymagają sprawdzenia. Nazwy biurek są widoczne w aplikacji i na pasku menu; etykiety Mission Control pozostają systemowe.
+
+Na macOS 27 wymagane uprawnienie znajduje się w **Prywatność i ochrona → Sterowanie urządzeniami i dostęp do danych**. Po lokalnej przebudowie może być konieczne usunięcie starego wpisu i ponowne dodanie właściwego pliku aplikacji. Przed włączeniem automatyki wstrzymaj DeskPilot w Hammerspoonie.
+
+## DeskPilot 2 — wersja Hammerspoon
 
 Konfiguracja Hammerspoon dla macOS: domyślnie **jedna aplikacja = jedno zwykłe biurko**, wszystkie jej standardowe okna razem. Dla Google Chrome obowiązuje **jeden profil = jedno biurko**: wszystkie jego okna i karty razem. DeskPilot pamięta układ ostatniej sesji, może uruchomić zapisane aktywne aplikacje i dopasowuje ich biurka do rzeczywiście podłączonych monitorów. Gdy na wybranym monitorze brakuje wolnego biurka, tworzy nowe.
 
