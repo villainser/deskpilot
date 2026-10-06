@@ -13,6 +13,7 @@ final class PanelState: ObservableObject {
 struct RootView: View {
     @ObservedObject var engine: Engine
     @ObservedObject var ui: PanelState
+    @AppStorage(MissionControlNames.preference) private var showMissionControlNames = true
 
     let sections = [("Desktops", "rectangle.3.group"), ("Assignments", "pin"), ("Layouts", "display.2"), ("Settings", "slider.horizontal.3"), ("Diagnostics", "waveform.path.ecg")]
 
@@ -25,7 +26,7 @@ struct RootView: View {
                     } else {
                         Image(systemName: "rectangle.3.group.fill").font(.title).foregroundStyle(.teal)
                     }
-                    VStack(alignment: .leading) { Text("DeskPilot").font(.title3.bold()); Text("VERSION 0.2.0").font(.caption2.monospaced()).foregroundStyle(.secondary) }
+                    VStack(alignment: .leading) { Text("DeskPilot").font(.title3.bold()); Text("VERSION 0.2.1").font(.caption2.monospaced()).foregroundStyle(.secondary) }
                 }.padding(.top, 22)
                 VStack(spacing: 5) {
                     ForEach(sections, id: \.0) { item in
@@ -106,7 +107,7 @@ struct RootView: View {
             VStack(alignment: .leading, spacing: 18) {
                 Text("Desktop name").font(.title2.bold())
                 TextField("Leave empty to name automatically", text: $ui.newName).textFieldStyle(.roundedBorder)
-                Text("The name appears in DeskPilot and the menu bar. Reordering desktops preserves their names.").font(.caption).foregroundStyle(.secondary)
+                Text("The name appears in DeskPilot, the menu bar and Mission Control badges when enabled. Reordering desktops preserves their names.").font(.caption).foregroundStyle(.secondary)
                 HStack { Spacer(); Button("Cancel") { ui.renaming = nil }; Button("Save") { engine.rename(desktop, to: ui.newName); ui.renaming = nil }.keyboardShortcut(.defaultAction) }
             }.padding(28).frame(width: 430)
         }
@@ -270,7 +271,9 @@ struct RootView: View {
             }
             GroupBox("macOS integration") {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Mission Control and macOS gestures remain available. Custom names appear in DeskPilot and the menu bar; Mission Control retains its system labels.")
+                    Toggle("Show names in Mission Control", isOn: $showMissionControlNames)
+                        .onChange(of: showMissionControlNames) { NotificationCenter.default.post(name: MissionControlNames.preferenceChanged, object: nil) }
+                    Text("DeskPilot places name badges on Mission Control thumbnails. They let clicks and dragging pass through. Apple's system labels are unchanged; switching this off removes the badges and stops their background check.")
                     Text("In System Settings → Desktop & Dock, turn off automatic Space reordering and enable Displays have separate Spaces.")
                     Button("Open Desktop & Dock") { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Desktop-Settings.extension")!) }
                 }.font(.callout).padding(14).frame(maxWidth: .infinity, alignment: .leading)
@@ -286,14 +289,16 @@ struct RootView: View {
                     shortcut("Window management access", engine.trusted ? "Granted" : "Required")
                     shortcut("Window movement", engine.system.canMove ? "Available · verified on each move" : "Unavailable")
                     shortcut("Chrome profiles", String(engine.chromeProfiles.count))
-                    shortcut("Continuous idle polling", "Off")
+                    shortcut("Recognized Chrome windows", "\(engine.windows.filter { $0.appID == "com.google.Chrome" && $0.group != nil }.count) / \(engine.windows.filter { $0.appID == "com.google.Chrome" }.count)")
+                    shortcut("Window routing idle polling", "Off")
+                    shortcut("Mission Control name checks", showMissionControlNames ? "1.5 s idle · 0.25 s visible" : "Off")
                     shortcut("Screen previews", "Not used")
                 }.padding(15)
             }
             Text("The read counter should stop when nothing changes. Available means the system function exists. Every window move is confirmed separately.").foregroundStyle(.secondary)
             Button("Refresh and check access") { engine.checkAccessibility() }
             Text("Application: \(Bundle.main.bundleURL.path)").font(.caption).textSelection(.enabled).foregroundStyle(.secondary)
-            Text("Version 0.2.0 · data stays on this Mac").font(.caption).foregroundStyle(.secondary)
+            Text("Version 0.2.1 · data stays on this Mac").font(.caption).foregroundStyle(.secondary)
         }
     }
 

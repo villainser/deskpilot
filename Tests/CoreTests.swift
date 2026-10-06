@@ -83,6 +83,39 @@ import Foundation
         check(DesktopNaming.name(for: moved, customNames: [:], assignments: [rule], windows: []) == "App", "Desktop uses its assigned application name")
         check(DesktopNaming.name(for: moved, customNames: ["stable": "My desk"], assignments: [rule], windows: []) == "My desk", "Manual names take priority")
         check(DesktopNaming.name(for: moved, customNames: ["stable": "  "], assignments: [chromeRule], windows: []) == "Work", "Clearing a custom name restores automatic naming")
+        final class Node {
+            var role: String
+            var title: String
+            var children: [Node]
+            init(_ role: String, _ title: String = "", _ children: [Node] = []) { self.role = role; self.title = title; self.children = children }
+        }
+        let browserRoot = Node("AXApplication")
+        let nativeTitle = Node("AXGroup", "Page – Google Chrome – Work")
+        let page = Node("AXWebArea", "Page – Google Chrome – Home", [Node("AXGroup", "Wrong profile")])
+        let chromeWindow = Node("AXWindow", "Page", [Node("AXGroup", "", [Node("AXGroup", "", [nativeTitle])]), page])
+        var nativeMode = false
+        let exposed = ChromeAccessibility.windows(application: browserRoot, role: { node in nativeMode = true; return node.role }, read: { _ in nativeMode ? [chromeWindow] : nil })
+        check(exposed?.count == 1, "Chrome application role is read before its windows to initialize native accessibility")
+        var visitedWebContent = false
+        let nativeTitles = ChromeAccessibility.windowTitles(window: chromeWindow, role: { $0.role }, strings: { node in
+            if node.role == "AXWebArea" { visitedWebContent = true }; return [node.title]
+        }, children: { node in
+            if node.role == "AXWebArea" { visitedWebContent = true }; return node.children
+        })
+        check(ChromeResolver.resolve(titles: nativeTitles, profiles: profiles)?.id == "Default", "Nested native Chrome root supplies the actual profile title")
+        check(!visitedWebContent && !nativeTitles.contains("Wrong profile"), "Chrome identity scan never enters page content")
+        let cycle = Node("AXGroup"); cycle.children = [cycle]
+        var reads = 0
+        _ = ChromeAccessibility.windowTitles(window: cycle, role: { $0.role }, strings: { _ in reads += 1; return [] }, children: { $0.children })
+        check(reads <= 5, "Native Chrome traversal is bounded even for a cyclic AX tree")
+        let thumbnail = CGRect(x: 1100, y: 40, width: 180, height: 110)
+        let badge = MissionControlLabelPolicy.frame(thumbnail: thumbnail, screen: CGRect(x: 1000, y: -200, width: 1500, height: 1000), primaryHeight: 800)
+        check(badge?.minY == 654 && badge?.midX == 1190, "Mission Control badge converts AX coordinates on an offset external display")
+        check(MissionControlLabelPolicy.frame(thumbnail: .zero, screen: display.frame, primaryHeight: 800) == nil, "Missing thumbnail geometry does not produce a guessed name position")
+        let fullscreen = Desktop(id: "full", systemID: 10, displayID: "laptop", ordinal: 2, fullScreen: true, active: false)
+        let pairs = MissionControlLabelPolicy.paired(desktops: [moved, fullscreen], frames: [.zero, thumbnail], displayID: "laptop")
+        check(pairs.count == 1 && pairs[0].0.id == "stable" && pairs[0].1 == thumbnail, "Fullscreen thumbnail preserves ordinal alignment without receiving a desktop badge")
+        check(MissionControlLabelPolicy.paired(desktops: [moved, fullscreen], frames: [thumbnail], displayID: "laptop").isEmpty, "Changing Mission Control list does not label the wrong desktop")
         print("PASS: \(total) core checks")
     }
 }

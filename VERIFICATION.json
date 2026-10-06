@@ -1,10 +1,10 @@
 {
-  "version": "0.2.0",
+  "version": "0.2.1",
   "date": "2026-10-07",
   "platform": "macOS 27.0.1 / Apple Silicon",
   "build": "passed",
   "coreChecks": {
-    "passed": 43,
+    "passed": 51,
     "failed": 0
   },
   "engineChecks": {
@@ -36,6 +36,7 @@
     "codeSignature": "passed"
   },
   "notYetVerified": [
+    "Mission Control badge visibility, geometry and resource use on the target Mac",
     "Live Chrome profile recognition and automatic routing in this build",
     "Mission Control desktop creation and switching on the target system in this build",
     "Window management permission for the packaged GUI application",
@@ -44,10 +45,23 @@
     "Idle and active automation resource benchmarks"
   ],
   "manualTestLimitation": "The computer-use tool blocked access to the current browser page. Live browser and GUI checks were stopped; simulated tests are not presented as live verification.",
-  "namingScope": "Custom and automatic names appear in DeskPilot and its menu bar. Mission Control retains system labels.",
+  "namingScope": "DeskPilot panel and menu names plus optional click-through badges on Mission Control thumbnails. The underlying Apple labels are unchanged.",
   "bundleValidation": {
     "infoPlist": "passed",
     "architecture": "arm64",
     "adHocSignature": "passed"
-  }
+  },
+  "nativeAccessibilityChecks": {
+    "passed": true,
+    "environment": "Synthetic native accessibility tree; no live browser contents accessed",
+    "coverage": [
+      "Application role is read before AXWindows to initialize Chromium native accessibility",
+      "Nested native root title is found while AXWebArea and descendants are excluded",
+      "Traversal terminates with cyclic input and has a node/depth limit",
+      "Mission Control badge geometry converts coordinates on an offset external display",
+      "Fullscreen entries retain thumbnail ordering but are not labeled",
+      "Changing thumbnail list and missing geometry do not produce guessed positions"
+    ]
+  },
+  "resourceBehavior": "Window routing remains event-based. Mission Control badges have Dock notifications plus fallback checks every 1.5 seconds while idle and 0.25 seconds while visible. Disabling badges stops those checks."
 }

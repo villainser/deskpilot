@@ -136,7 +136,13 @@ final class SystemAccess: SystemAccessProtocol {
         for app in apps where dirty == nil || dirty!.contains(app.processIdentifier) || cache[app.processIdentifier] == nil {
             let pid = app.processIdentifier, root = AXUIElementCreateApplication(app.processIdentifier)
             AXUIElementSetMessagingTimeout(root, 0.3)
-            guard let windows = ax(root, kAXWindowsAttribute) as? [AXUIElement] else { continue }
+            let appWindows: [AXUIElement]?
+            if app.bundleIdentifier == "com.google.Chrome" {
+                appWindows = ChromeAccessibility.windows(application: root,
+                    role: { ax($0, kAXRoleAttribute) as? String },
+                    read: { ax($0, kAXWindowsAttribute) as? [AXUIElement] })
+            } else { appWindows = ax(root, kAXWindowsAttribute) as? [AXUIElement] }
+            guard let windows = appWindows else { continue }
             var records: [WindowInfo] = []
             for window in windows {
                 let id = DPWindowID(window)
@@ -177,13 +183,10 @@ final class SystemAccess: SystemAccessProtocol {
     }
 
     private func chromeWindowTitles(_ window: AXUIElement) -> [String] {
-        // Read only the window and its immediate native root group. Do not walk
-        // web areas, tabs, or page content to infer a browser profile.
-        var titles = [kAXTitleAttribute, kAXDescriptionAttribute].compactMap { ax(window, $0) as? String }
-        for child in axChildren(window).prefix(12) where ax(child, kAXRoleAttribute) as? String == kAXGroupRole {
-            if let title = ax(child, kAXTitleAttribute) as? String { titles.append(title) }
-        }
-        return Array(Set(titles.filter { !$0.isEmpty }))
+        ChromeAccessibility.windowTitles(window: window,
+            role: { ax($0, kAXRoleAttribute) as? String },
+            strings: { element in [kAXTitleAttribute, kAXDescriptionAttribute].compactMap { ax(element, $0) as? String } },
+            children: axChildren)
     }
 
     func windowIdentities() -> Set<WindowIdentity>? {
@@ -234,7 +237,9 @@ final class SystemAccess: SystemAccessProtocol {
 
     func missionControlRoot() -> AXUIElement? {
         guard trusted, let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else { return nil }
-        return find("mc", below: AXUIElementCreateApplication(dock.processIdentifier))
+        let root = AXUIElementCreateApplication(dock.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, 0.08)
+        return find("mc", below: root)
     }
 
     @MainActor func missionControl(display: Display, select: Desktop? = nil, create: Bool = false) async throws {
@@ -269,7 +274,7 @@ final class SystemAccess: SystemAccessProtocol {
         }
     }
 
-    private func missionControlDisplay(_ displayID: UInt32, below root: AXUIElement, depth: Int = 0) -> AXUIElement? {
+    func missionControlDisplay(_ displayID: UInt32, below root: AXUIElement, depth: Int = 0) -> AXUIElement? {
         if (ax(root, "AXDisplayID") as? NSNumber)?.uint32Value == displayID { return root }
         guard depth < 3 else { return nil }
         for child in axChildren(root) {

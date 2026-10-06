@@ -283,6 +283,9 @@ import ServiceManagement
     func writeRuntimeStatus() {
         let report: [String: Any] = ["pid": getpid(), "applicationPath": Bundle.main.bundleURL.path,
                                    "accessibility": trusted, "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
+                                   "chromeProfiles": chromeProfiles.count,
+                                   "chromeWindows": windows.filter { $0.appID == "com.google.Chrome" }.count,
+                                   "recognizedChromeWindows": windows.filter { $0.appID == "com.google.Chrome" && $0.group != nil }.count,
                                    "checkedAt": ISO8601DateFormatter().string(from: Date())]
         let url = dataURL.deletingLastPathComponent().appendingPathComponent("runtime-status.json")
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {

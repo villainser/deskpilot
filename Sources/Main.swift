@@ -55,6 +55,7 @@ final class Hotkeys {
     var item: NSStatusItem!
     var engine: Engine!
     let hotkeys = Hotkeys()
+    var missionControlNames: MissionControlNames?
     private var showToken: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -62,7 +63,7 @@ final class Hotkeys {
         var dataURL: URL?
         if let index = args.firstIndex(of: "--data-dir"), index + 1 < args.count { dataURL = URL(fileURLWithPath: args[index + 1], isDirectory: true).appendingPathComponent("state.json") }
         engine = Engine(dataURL: dataURL)
-        engine.onChange = { [weak self] in self?.updateMenu() }
+        engine.onChange = { [weak self] in self?.updateMenu(); self?.missionControlNames?.namesChanged() }
         engine.start()
         engine.writeRuntimeStatus()
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
@@ -75,6 +76,8 @@ final class Hotkeys {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         updateMenu()
         makeApplicationMenu()
+        missionControlNames = MissionControlNames(engine: engine)
+        missionControlNames?.start()
         showToken = DistributedNotificationCenter.default().addObserver(forName: .init("pl.deskpilot.native.show"), object: engine.dataURL.deletingLastPathComponent().path, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.show() }
         }
@@ -88,6 +91,7 @@ final class Hotkeys {
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool { sender.orderOut(nil); return false }
+    func applicationWillTerminate(_ notification: Notification) { missionControlNames?.stop() }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { show(); return true }
     func applicationDidBecomeActive(_ notification: Notification) {

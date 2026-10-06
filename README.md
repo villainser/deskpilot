@@ -7,14 +7,16 @@ A native macOS desktop manager built with Swift, SwiftUI and AppKit. Give each a
 ## Features
 
 - **Automatic desktops.** An unassigned app or Chrome profile gets a newly created macOS desktop. Its other windows join the same desktop; reopening it reuses the saved assignment while that desktop exists.
-- **Names that make sense.** Desktops use their assigned app or Chrome profile name. Choose a custom name with the pencil or the desktop context menu, or switch back to automatic naming.
+- **Names that make sense.** Desktops use their assigned app or Chrome profile name. Choose a custom name with the pencil or the desktop context menu, or switch back to automatic naming. Optional badges show these names on Mission Control thumbnails.
 - **Chrome profiles.** Match profiles by their stable profile directories and the profile information exposed by Chrome's native accessibility window title. Windows belonging to different profiles are kept separate.
 - **Shared desktops.** Add another app to a desktop and place windows on the left or right half of the display.
 - **Display layouts.** Save assignments and window geometry for a display setup. Restore a matching layout when displays change, with a default layout for one display.
 - **Native integration.** Keep macOS Spaces, Mission Control, gestures and manual desktop ordering. Access DeskPilot from the Dock, menu bar or keyboard.
 - **Event-based updates.** Window and workspace events trigger reads. Startup retries are bounded; unresolved live windows can resume when their title or profile information changes.
 
-Custom desktop names appear in DeskPilot and the menu bar. Mission Control keeps Apple's system labels. No separate naming permission is needed.
+Custom desktop names appear in DeskPilot, the menu bar and optional Mission Control badges. The badges are a click-through visual overlay; Apple's underlying system labels are unchanged. No separate naming permission is needed.
+
+**Settings → Show names in Mission Control** controls the badges and is enabled by default. Dock events wake the detector, with a fallback check every 1.5 seconds while idle and geometry updates every 0.25 seconds while Mission Control is visible. Disabling the feature stops these checks. Badges use the exposed thumbnail geometry and Space identities; if the thumbnail list changes or geometry is unavailable, names are hidden instead of placed by guesswork. Empty, unnamed desktops and fullscreen apps do not receive badges.
 
 ## Build
 
@@ -55,11 +57,11 @@ Desktop numbers follow the current display and Space order. Assignments and name
 
 ## Chrome profile matching
 
-DeskPilot reads profile names and directory identifiers from Chrome's local profile catalog. It checks the native window's accessible title, including its immediate native root title when available. With one regular Chrome profile, Chrome can omit the profile suffix; DeskPilot handles that case. Profile names with Unicode formatting or nonbreaking spaces are normalized before matching.
+DeskPilot reads profile names and directory identifiers from Chrome's local profile catalog. Before reading Chrome's windows, it queries the application's accessibility role. Chromium uses this request to initialize its native accessibility interface; reading the window list alone can leave profile information unavailable. DeskPilot then checks the window and its native root containers, with a depth and node limit. It does not request VoiceOver mode or descend into page content, tabs or toolbars. With one regular Chrome profile, Chrome can omit the profile suffix; DeskPilot handles that case. Profile names with Unicode formatting or nonbreaking spaces are normalized before matching.
 
 Incognito, guest windows, duplicate profile names and conflicting identity information are not assigned by guessing. If Chrome does not expose enough information, use **Choose profile…**. An explicit choice takes priority for that window and immediately queues it for assignment when automation is enabled. No tabs are detached, and page contents are not traversed to identify a profile.
 
-Names are matched according to Chromium's [accessible window title](https://chromium.googlesource.com/chromium/src/+/main/chrome/browser/ui/views/frame/browser_view.cc) behavior. Matching and routing regressions are covered by local tests with synthetic windows and profiles.
+Names are matched according to Chromium's [accessible window title](https://chromium.googlesource.com/chromium/src/+/main/chrome/browser/ui/views/frame/browser_view.cc) and [native accessibility activation](https://chromium.googlesource.com/chromium/src/+/main/chrome/browser/chrome_browser_application_mac.mm) behavior. Matching and routing regressions are covered by local tests with synthetic windows and profiles. **Diagnostics → Recognized Chrome windows** distinguishes finding the profile catalog from identifying actual windows. **Refresh and check access** updates these counts; its local runtime report contains counts without page titles or URLs.
 
 ## Reliability and privacy
 
@@ -72,7 +74,7 @@ Names are matched according to Chromium's [accessible window title](https://chro
 
 ## Verification and limitations
 
-Version 0.2.0 is a development build. See [VERIFICATION.json](VERIFICATION.json) for the exact checks and remaining manual tests.
+Version 0.2.1 is a development build. See [VERIFICATION.json](VERIFICATION.json) for the exact checks and remaining manual tests.
 
 The local suite includes policy tests and tests of the real routing engine against a simulated desktop service. It covers desktop creation, app and Chrome grouping, late metadata, busy queues, failure recovery and automatic/custom names. These tests do not substitute for a live multi-display test.
 
