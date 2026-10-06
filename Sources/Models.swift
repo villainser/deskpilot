@@ -126,9 +126,11 @@ struct AppState: Codable {
     var assignments: [Assignment] = []
     var profiles: [LayoutProfile] = []
     var defaultProfileID: String?
+    var chromeCatalogBookmark: Data?
+    var chromeCatalogProfiles: [ChromeProfile]?
 }
 
-struct ChromeProfile: Identifiable, Equatable {
+struct ChromeProfile: Identifiable, Equatable, Codable {
     var id: String
     var name: String
 }

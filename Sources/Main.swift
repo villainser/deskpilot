@@ -190,6 +190,19 @@ final class Hotkeys {
         do { instance = try AppInstance(directory: directory) }
         catch { fputs("DeskPilot: \(error.localizedDescription)\n", stderr); return }
         guard instance.acquire() else {
+            if let running = NSWorkspace.shared.runningApplications.first(where: {
+                $0.bundleIdentifier == Bundle.main.bundleIdentifier && $0.processIdentifier != getpid()
+            }), let url = running.bundleURL, url.standardizedFileURL != Bundle.main.bundleURL.standardizedFileURL {
+                app.setActivationPolicy(.regular)
+                app.activate(ignoringOtherApps: true)
+                let version = Bundle(url: url)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+                let alert = NSAlert()
+                alert.messageText = "Another copy of DeskPilot is running"
+                alert.informativeText = "Version \(version) is already running at:\n\(url.path)\n\nQuit that copy with Command-Q, then open this app again. This copy has not started."
+                alert.addButton(withTitle: "Show running copy")
+                alert.addButton(withTitle: "Cancel")
+                if alert.runModal() != .alertFirstButtonReturn { return }
+            }
             DistributedNotificationCenter.default().postNotificationName(.init("pl.deskpilot.native.show"), object: directory.path, userInfo: nil, deliverImmediately: true)
             return
         }

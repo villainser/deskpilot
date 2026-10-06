@@ -38,9 +38,9 @@ The build produces `.build/DeskPilot.app`, including standard and Retina icon si
 4. Use **Add app** to share a desktop. Use the window menu or keyboard shortcuts to arrange windows side by side.
 5. Save a layout for your laptop and mark it as the single-display default. Save another layout with external displays connected.
 
-Closing the panel keeps DeskPilot running. **Quit DeskPilot** or **Command-Q** terminates the app. Only one instance can manage the same settings directory.
+Closing the panel keeps DeskPilot running. **Quit DeskPilot** or **Command-Q** terminates the app. Only one instance can manage the same settings directory. Opening a different copy while one is running shows its version and location instead of silently appearing to launch the new copy.
 
-Local builds use an ad hoc signature. If access stops working after a rebuild, remove the existing permission entry and add the exact application you are running. **Show this app in Finder** identifies that file.
+Local builds use an ad hoc signature by default, so a rebuild can invalidate macOS privacy permissions. For repeated development builds, set `DESKPILOT_SIGNING_IDENTITY` to the name or hash of your existing code-signing identity and keep using the same certificate. This build option does not create a certificate or change privacy settings. If window access stops working after a rebuild, remove the existing permission entry and add the exact application you are running. **Show this app in Finder** identifies that file. Chrome catalog access is separate from window management access.
 
 ## Keyboard shortcuts
 
@@ -61,7 +61,15 @@ DeskPilot reads profile names and directory identifiers from Chrome's local prof
 
 Incognito, guest windows, duplicate profile names and conflicting identity information are not assigned by guessing. If Chrome does not expose enough information, use **Choose profile…**. An explicit choice takes priority for that window and immediately queues it for assignment when automation is enabled. No tabs are detached, and page contents are not traversed to identify a profile.
 
-Names are matched according to Chromium's [accessible window title](https://chromium.googlesource.com/chromium/src/+/main/chrome/browser/ui/views/frame/browser_view.cc) and [native accessibility activation](https://chromium.googlesource.com/chromium/src/+/main/chrome/browser/chrome_browser_application_mac.mm) behavior. Matching and routing regressions are covered by local tests with synthetic windows and profiles. **Diagnostics → Recognized Chrome windows** distinguishes finding the profile catalog from identifying actual windows. **Refresh and check access** updates these counts; its local runtime report contains counts without page titles or URLs.
+Names are matched according to Chromium's [accessible window title](https://chromium.googlesource.com/chromium/src/+/main/chrome/browser/ui/views/frame/browser_view.cc) and [native accessibility activation](https://chromium.googlesource.com/chromium/src/+/main/chrome/browser/chrome_browser_application_mac.mm) behavior. Matching and routing regressions are covered by local tests with synthetic windows and profiles. Diagnostics shows separate counts for profiles in the catalog, native Chrome windows found, and windows with a known profile. Browser tabs are not counted as profiles.
+
+If the catalog cannot be read, Diagnostics shows **Unavailable** and the actual file error, rather than claiming there are zero profiles. Choose **Connect Chrome profiles…** and select `~/Library/Application Support/Google/Chrome/Local State` in the system file picker. The picker is attached to the app window, and Diagnostics distinguishes waiting, cancellation, selection failure and success. DeskPilot validates the catalog before replacing a previous connection and saves a file bookmark for future launches.
+
+DeskPilot retains only profile names and directory identifiers already read with permission, never the full catalog. If a later read fails, these entries are marked **saved**; matching then requires an explicit profile suffix or a manual choice. It never assumes a sole saved profile is Chrome's only current profile. An unavailable saved bookmark requests reconnection instead of silently reading a different catalog. Failed reads are retried at most every 30 seconds when window events occur, and **Refresh and check access** retries immediately. Discovery runs even when macOS temporarily fails to expose its desktops.
+
+The app includes Apple's [other-application-data purpose message](https://developer.apple.com/documentation/bundleresources/information-property-list/nsappdatausagedescription) to explain its use of profile metadata when macOS asks for access. The purpose message does not grant access or repair a permission invalidated by a changed code signature.
+
+**Refresh and check access** updates the local runtime report with counts, file-read status and event types, without page titles or URLs. Activating DeskPilot's own panel is excluded from managed-window events.
 
 ## Reliability and privacy
 
@@ -74,7 +82,7 @@ Names are matched according to Chromium's [accessible window title](https://chro
 
 ## Verification and limitations
 
-Version 0.2.1 is a development build. See [VERIFICATION.json](VERIFICATION.json) for the exact checks and remaining manual tests.
+Version 0.2.3 is a development build. See [VERIFICATION.json](VERIFICATION.json) for the exact checks and remaining manual tests.
 
 The local suite includes policy tests and tests of the real routing engine against a simulated desktop service. It covers desktop creation, app and Chrome grouping, late metadata, busy queues, failure recovery and automatic/custom names. These tests do not substitute for a live multi-display test.
 

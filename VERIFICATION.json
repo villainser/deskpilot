@@ -1,5 +1,5 @@
 {
-  "version": "0.2.1",
+  "version": "0.2.3",
   "date": "2026-10-07",
   "platform": "macOS 27.0.1 / Apple Silicon",
   "build": "passed",
@@ -8,7 +8,7 @@
     "failed": 0
   },
   "engineChecks": {
-    "passed": 25,
+    "passed": 38,
     "failed": 0,
     "environment": "Actual routing engine with an injected simulated desktop service and synthetic Chrome profile catalog. No live application windows or user settings are accessed.",
     "coverage": [
@@ -36,6 +36,7 @@
     "codeSignature": "passed"
   },
   "notYetVerified": [
+    "Chrome catalog access after selecting Local State in the system file picker",
     "Mission Control badge visibility, geometry and resource use on the target Mac",
     "Live Chrome profile recognition and automatic routing in this build",
     "Mission Control desktop creation and switching on the target system in this build",
@@ -44,7 +45,7 @@
     "Disconnect and reconnect on the target monitor setup",
     "Idle and active automation resource benchmarks"
   ],
-  "manualTestLimitation": "The computer-use tool blocked access to the current browser page. Live browser and GUI checks were stopped; simulated tests are not presented as live verification.",
+  "manualTestLimitation": "Browser-page inspection is unavailable under the computer-use restriction. Selecting the DeskPilot app also failed because the native computer-use connection closed. Synthetic tests are not presented as GUI or permission-grant verification.",
   "namingScope": "DeskPilot panel and menu names plus optional click-through badges on Mission Control thumbnails. The underlying Apple labels are unchanged.",
   "bundleValidation": {
     "infoPlist": "passed",
@@ -63,5 +64,26 @@
       "Changing thumbnail list and missing geometry do not produce guessed positions"
     ]
   },
-  "resourceBehavior": "Window routing remains event-based. Mission Control badges have Dock notifications plus fallback checks every 1.5 seconds while idle and 0.25 seconds while visible. Disabling badges stops those checks."
+  "resourceBehavior": "Window routing remains event-based. Mission Control badges have Dock notifications plus fallback checks every 1.5 seconds while idle and 0.25 seconds while visible. Disabling badges stops those checks.",
+  "chromeCatalogChecks": {
+    "passed": true,
+    "coverage": [
+      "Catalog discovery proceeds when Space discovery fails",
+      "Unreadable catalog has a visible file error",
+      "Selected catalog is validated and remembered with a bookmark",
+      "Catalog bookmark is restored after restart",
+      "DeskPilot activation does not trigger a managed-window refresh",
+      "Unreadable catalog displays Unavailable rather than zero",
+      "Background refreshes do not repeatedly retry a failed read; explicit Refresh retries immediately",
+      "Invalid file selection preserves the existing connection and reports failure",
+      "Previously read profile names and IDs survive restart with a missing source file",
+      "Saved catalogs require explicit profile identity; no sole-profile fallback",
+      "Only names and directory identifiers are saved, not unrelated catalog data",
+      "Unresolvable selected bookmarks do not silently fall back to a different catalog"
+    ],
+    "bookmarkTestContext": "Synthetic files in a restricted test process. Minimal bookmarks passed; the sandbox rejected security-scope issuance, so the system file picker grant still needs GUI verification.",
+    "liveFinding": "The packaged GUI reported a denied Chrome catalog read. App-specific macOS logs also reported a code-requirement mismatch for SystemPolicyAppDataDetailed after development rebuilds. A later report came from an older app copy.",
+    "liveReconnection": "Not confirmed. The user reported zero after attempting the 0.2.2 connection flow; no saved bookmark was present. The 0.2.3 file picker and permission grant still need live verification."
+  },
+  "codeSigning": "Packaged build uses an ad hoc signature. An existing stable signing identity can be provided with DESKPILOT_SIGNING_IDENTITY for development. No privacy settings or signing certificates were changed."
 }

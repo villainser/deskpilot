@@ -26,7 +26,7 @@ struct RootView: View {
                     } else {
                         Image(systemName: "rectangle.3.group.fill").font(.title).foregroundStyle(.teal)
                     }
-                    VStack(alignment: .leading) { Text("DeskPilot").font(.title3.bold()); Text("VERSION 0.2.1").font(.caption2.monospaced()).foregroundStyle(.secondary) }
+                    VStack(alignment: .leading) { Text("DeskPilot").font(.title3.bold()); Text("VERSION \(appVersion)").font(.caption2.monospaced()).foregroundStyle(.secondary) }
                 }.padding(.top, 22)
                 VStack(spacing: 5) {
                     ForEach(sections, id: \.0) { item in
@@ -114,6 +114,8 @@ struct RootView: View {
         .frame(minWidth: 920, minHeight: 650)
     }
 
+    var appVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development" }
+
     var subtitle: String {
         switch ui.section {
         case "Desktops": return "Your macOS desktops, organized by display."
@@ -126,6 +128,16 @@ struct RootView: View {
 
     var desktopPage: some View {
         VStack(alignment: .leading, spacing: 24) {
+            if engine.chromeProfiles.isEmpty && engine.windows.contains(where: { $0.appID == "com.google.Chrome" }) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Connect Chrome profiles to recognize these windows").bold()
+                        Text(engine.chromeCatalogStatus).font(.caption).textSelection(.enabled)
+                    }
+                    Spacer()
+                    Button("Connect Chrome profiles…") { engine.connectChromeProfiles() }.disabled(engine.choosingChromeCatalog)
+                }.padding(14).background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+            }
             HStack {
                 Text("New apps and Chrome profiles get their own desktops. Organize existing windows here.").font(.callout).foregroundStyle(.secondary)
                 Spacer()
@@ -283,22 +295,26 @@ struct RootView: View {
 
     var diagnosticPage: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 15) { metric("Reads", String(engine.refreshes)); metric("Events", String(engine.events)); metric("Last read", String(format: "%.1f ms", engine.lastReadMilliseconds)) }
+            HStack(spacing: 15) { metric("Refreshes", String(engine.refreshes)); metric("Events", String(engine.events)); metric("Last read", String(format: "%.1f ms", engine.lastReadMilliseconds)) }
             GroupBox("System access") {
                 VStack(spacing: 13) {
                     shortcut("Window management access", engine.trusted ? "Granted" : "Required")
                     shortcut("Window movement", engine.system.canMove ? "Available · verified on each move" : "Unavailable")
-                    shortcut("Chrome profiles", String(engine.chromeProfiles.count))
-                    shortcut("Recognized Chrome windows", "\(engine.windows.filter { $0.appID == "com.google.Chrome" && $0.group != nil }.count) / \(engine.windows.filter { $0.appID == "com.google.Chrome" }.count)")
+                    shortcut("Chrome profiles in catalog", engine.chromeCatalogCountLabel)
+                    Text(engine.chromeCatalogStatus).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Connect Chrome profiles…") { engine.connectChromeProfiles() }.disabled(engine.choosingChromeCatalog)
+                    Text(engine.chromeConnectionStatus).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                    shortcut("Chrome windows found", String(engine.windows.filter { $0.appID == "com.google.Chrome" }.count))
+                    shortcut("Chrome windows with a known profile", String(engine.windows.filter { $0.appID == "com.google.Chrome" && $0.group != nil }.count))
                     shortcut("Window routing idle polling", "Off")
                     shortcut("Mission Control name checks", showMissionControlNames ? "1.5 s idle · 0.25 s visible" : "Off")
                     shortcut("Screen previews", "Not used")
                 }.padding(15)
             }
             Text("The read counter should stop when nothing changes. Available means the system function exists. Every window move is confirmed separately.").foregroundStyle(.secondary)
-            Button("Refresh and check access") { engine.checkAccessibility() }
+            Button("Refresh and check access") { engine.checkAccessibility(retryChromeCatalog: true) }
             Text("Application: \(Bundle.main.bundleURL.path)").font(.caption).textSelection(.enabled).foregroundStyle(.secondary)
-            Text("Version 0.2.1 · data stays on this Mac").font(.caption).foregroundStyle(.secondary)
+            Text("Version \(appVersion) · data stays on this Mac").font(.caption).foregroundStyle(.secondary)
         }
     }
 

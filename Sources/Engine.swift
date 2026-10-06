@@ -9,11 +9,20 @@ import ServiceManagement
     @Published var desktops: [Desktop] = []
     @Published var windows: [WindowInfo] = []
     @Published var chromeProfiles: [ChromeProfile] = []
+    @Published var chromeCatalogStatus = "Not read yet"
+    @Published var chromeCatalogAvailable = false
+    @Published var chromeConnectionStatus = "Not connected with the file picker"
+    @Published var choosingChromeCatalog = false
+    private var chromePicker: NSOpenPanel?
+    private var chromeRetryAfter = Date.distantPast
+    private var chromeCatalogLocationUnavailable = false
+    private(set) var chromeCatalogReadAttempts = 0
     @Published var status = "Ready to set up"
     @Published var trusted = false
     @Published var busy = false
     @Published var locked = false
     @Published var events = 0
+    private var eventCounts: [String: Int] = [:]
     @Published var refreshes = 0
     @Published var lastReadMilliseconds = 0.0
     @Published var activeProfileID: String?
@@ -21,7 +30,7 @@ import ServiceManagement
     var onChange: (() -> Void)?
     let system: SystemAccessProtocol
     let dataURL: URL
-    private let chromeProfilesURL: URL
+    private var chromeProfilesURL: URL
     var rememberedWindow: UInt32?
     private var pending: DispatchWorkItem?
     private var scheduledFor: Date?
@@ -56,9 +65,23 @@ import ServiceManagement
                 let loaded = try JSONDecoder().decode(AppState.self, from: data)
                 guard loaded.schema == 1 else { throw AppError.message("Unsupported settings version.") }
                 state = loaded
+                self.chromeProfiles = loaded.chromeCatalogProfiles ?? []
             } catch {
                 operational = false
                 lastError = "Unable to load settings. The original file was preserved: \(error.localizedDescription)"
+            }
+        }
+        if chromeProfilesURL == nil, let bookmark = state.chromeCatalogBookmark {
+            chromeConnectionStatus = "Restoring saved file access"
+            var stale = false
+            let selected = (try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI], bookmarkDataIsStale: &stale))
+                ?? (try? URL(resolvingBookmarkData: bookmark, options: .withoutUI, bookmarkDataIsStale: &stale))
+            if let selected {
+                self.chromeProfilesURL = selected
+                chromeConnectionStatus = "Saved file selected; checking access"
+            } else {
+                chromeCatalogLocationUnavailable = true
+                chromeCatalogStatus = "Reconnect Chrome profiles: the saved file permission could not be restored."
             }
         }
     }
@@ -77,7 +100,10 @@ import ServiceManagement
     }
 
     func event(_ name: String, pid: Int32?, windowID: UInt32?) {
+        // Showing or updating our own panel does not change managed windows.
+        if pid == getpid() { return }
         events += 1
+        eventCounts[name, default: 0] += 1
         if name == "com.apple.screenIsLocked" || name == NSWorkspace.sessionDidResignActiveNotification.rawValue {
             locked = true; generation += 1; routingInbox.clear(); launching.removeAll(); pending?.cancel()
             topologyTask?.cancel(); status = "Mac is locked"; return
@@ -136,6 +162,8 @@ import ServiceManagement
         if previousTrust != trusted { writeRuntimeStatus() }
         displays = system.screens()
         displayGeometry = geometrySignature(displays)
+        // Profile discovery must not depend on a successful Space snapshot.
+        loadChromeProfiles()
         guard let spaces = system.spaces(displays: displays) else {
             lastError = "Unable to read desktops. No windows will be moved."
             if state.enabled && (routingInbox.needsRetry() || launching.values.contains(where: { Date().timeIntervalSince($0) < 8 })) {
@@ -159,7 +187,6 @@ import ServiceManagement
             knownServerWindows = serverWindows
             routingInbox.reconcile(live: serverWindows)
         }
-        loadChromeProfiles()
         windows = raw.map { item in
             var item = item
             if item.appID == "com.google.Chrome" {
@@ -168,7 +195,11 @@ import ServiceManagement
                 let cached = chromeBindings[key].flatMap { old in chromeProfiles.first { $0.id == old.id } }
                 let titles = [item.title] + item.accessibilityTitles
                 let explicitIdentity = titles.contains(where: ChromeResolver.hasIdentitySuffix)
-                let profile = manual ?? ChromeResolver.resolve(titles: titles, profiles: chromeProfiles) ?? (explicitIdentity ? nil : cached)
+                // A saved catalog may be out of date. Require an explicit
+                // profile suffix before matching against it; never assume the
+                // only saved profile is still Chrome's only profile.
+                let resolved = chromeCatalogAvailable || explicitIdentity ? ChromeResolver.resolve(titles: titles, profiles: chromeProfiles) : nil
+                let profile = manual ?? resolved ?? (explicitIdentity ? nil : cached)
                 if explicitIdentity && profile == nil { chromeBindings[key] = nil }
                 if let profile { chromeBindings[key] = profile; item.group = item.appID + "::" + profile.id; item.profileName = profile.name; item.profileDirectory = profile.id }
             } else { item.group = item.appID }
@@ -272,12 +303,13 @@ import ServiceManagement
         ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 ? "Device Control and Data Access" : "Accessibility"
     }
 
-    func checkAccessibility() {
+    func checkAccessibility(retryChromeCatalog: Bool = false) {
+        if retryChromeCatalog { loadChromeProfiles(force: true) }
         refresh(full: true)
-        writeRuntimeStatus()
         if !busy {
             status = trusted ? (state.enabled ? "Automation enabled" : "Access granted · automation paused") : "Access is not granted to this copy of DeskPilot"
         }
+        writeRuntimeStatus()
     }
 
     func writeRuntimeStatus() {
@@ -286,6 +318,16 @@ import ServiceManagement
                                    "chromeProfiles": chromeProfiles.count,
                                    "chromeWindows": windows.filter { $0.appID == "com.google.Chrome" }.count,
                                    "recognizedChromeWindows": windows.filter { $0.appID == "com.google.Chrome" && $0.group != nil }.count,
+                                   "chromeCatalogStatus": chromeCatalogStatus,
+                                   "chromeCatalogAvailable": chromeCatalogAvailable,
+                                   "chromeConnectionStatus": chromeConnectionStatus,
+                                   "choosingChromeCatalog": choosingChromeCatalog,
+                                   "chromeCatalogReadAttempts": chromeCatalogReadAttempts,
+                                   "chromeCatalogPath": chromeProfilesURL.path,
+                                   "desktops": desktops.count, "displays": displays.count, "windows": windows.count,
+                                   "reads": refreshes, "locked": locked, "status": status,
+                                   "lastError": lastError ?? "",
+                                   "eventCounts": eventCounts,
                                    "checkedAt": ISO8601DateFormatter().string(from: Date())]
         let url = dataURL.deletingLastPathComponent().appendingPathComponent("runtime-status.json")
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
@@ -294,14 +336,114 @@ import ServiceManagement
         }
     }
 
-    func loadChromeProfiles() {
+    var chromeCatalogCountLabel: String {
+        if chromeCatalogAvailable { return String(chromeProfiles.count) }
+        return chromeProfiles.isEmpty ? "Unavailable" : "\(chromeProfiles.count) saved"
+    }
+
+    private func readChromeCatalog(_ url: URL) throws -> [ChromeProfile] {
+        chromeCatalogReadAttempts += 1
+        let data = try Data(contentsOf: url)
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let profile = root["profile"] as? [String: Any], let cache = profile["info_cache"] as? [String: Any] else {
+            throw AppError.message("Choose Chrome's Local State file, not a profile's Preferences file.")
+        }
+        return ChromeResolver.profiles(from: cache)
+    }
+
+    private func acceptChromeProfiles(_ profiles: [ChromeProfile], modified: Date?) {
+        chromeProfiles = profiles; chromeModified = modified
+        chromeCatalogAvailable = true; chromeRetryAfter = .distantPast
+        chromeCatalogStatus = "Read \(profiles.count) profiles"
+        // Retain only the names and IDs already read with permission, never the
+        // source catalog. A later permission failure must not erase this catalog.
+        if state.chromeCatalogProfiles != profiles {
+            state.chromeCatalogProfiles = profiles
+            save()
+        }
+    }
+
+    func loadChromeProfiles(force: Bool = false) {
+        guard !choosingChromeCatalog, force || Date() >= chromeRetryAfter else { return }
+        guard !chromeCatalogLocationUnavailable else {
+            chromeCatalogAvailable = false
+            chromeCatalogStatus = "Reconnect Chrome profiles: the selected file is unavailable.\(chromeProfiles.isEmpty ? "" : " Using saved profile names.")"
+            return
+        }
         let url = chromeProfilesURL
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-        guard chromeModified == nil || modified != chromeModified else { return }
-        guard let data = try? Data(contentsOf: url),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let profile = root["profile"] as? [String: Any], let cache = profile["info_cache"] as? [String: Any] else { return }
-        chromeProfiles = ChromeResolver.profiles(from: cache); chromeModified = modified
+        guard force || chromeModified == nil || modified != chromeModified else { return }
+        do {
+            let profiles = try readChromeCatalog(url)
+            acceptChromeProfiles(profiles, modified: modified)
+        } catch {
+            chromeCatalogAvailable = false; chromeModified = nil
+            // Window events can arrive many times per second. They must not
+            // repeatedly trigger a denied file read or a system privacy prompt.
+            chromeRetryAfter = Date().addingTimeInterval(30)
+            let prefix = chromeProfiles.isEmpty ? "Profile catalog unavailable" : "Using \(chromeProfiles.count) saved profiles; live catalog unavailable"
+            chromeCatalogStatus = "\(prefix): \(error.localizedDescription)"
+        }
+    }
+
+    func connectChromeProfiles() {
+        if let chromePicker { chromePicker.makeKeyAndOrderFront(nil); return }
+        let picker = NSOpenPanel()
+        chromePicker = picker; choosingChromeCatalog = true
+        chromeConnectionStatus = "Waiting for a file selection"
+        writeRuntimeStatus()
+        picker.title = "Connect Chrome profiles"
+        picker.message = "Choose Chrome's Local State file. DeskPilot reads profile names and directory identifiers from this file."
+        picker.prompt = "Connect profiles"
+        picker.directoryURL = chromeProfilesURL.deletingLastPathComponent()
+        picker.nameFieldStringValue = "Local State"
+        picker.canChooseFiles = true; picker.canChooseDirectories = false
+        picker.allowsMultipleSelection = false; picker.canCreateDirectories = false
+        picker.showsHiddenFiles = true
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            let url = response == .OK ? picker.url : nil
+            Task { @MainActor in
+                guard let self else { return }
+                self.chromePicker = nil; self.choosingChromeCatalog = false
+                if let url { self.connectChromeProfiles(to: url) }
+                else { self.chromeConnectionStatus = "File selection cancelled; no access was changed"; self.writeRuntimeStatus() }
+            }
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        if let window = NSApp.keyWindow ?? NSApp.mainWindow { picker.beginSheetModal(for: window, completionHandler: completion) }
+        else { picker.begin(completionHandler: completion) }
+    }
+
+    func connectChromeProfiles(to url: URL) {
+        chromeConnectionStatus = "Reading the selected file"
+        writeRuntimeStatus()
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let profiles = try readChromeCatalog(url)
+            let bookmark: Data
+            if let scopedBookmark = try? url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil) {
+                bookmark = scopedBookmark
+            } else {
+                bookmark = try url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
+            }
+            chromeProfilesURL = url; chromeModified = nil; chromeCatalogLocationUnavailable = false
+            state.chromeCatalogBookmark = bookmark
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            acceptChromeProfiles(profiles, modified: modified)
+            chromeConnectionStatus = "Selected file connected successfully"
+            lastError = nil
+            save()
+            refresh(full: true)
+            if state.enabled { enqueueOpenWindows(); schedule(full: true) }
+            status = "Connected \(chromeProfiles.count) Chrome profiles"
+            writeRuntimeStatus()
+        } catch {
+            chromeConnectionStatus = "Could not connect the selected file: \(error.localizedDescription)"
+            fail(error); writeRuntimeStatus()
+        }
     }
 
     func setChromeProfile(windowID: UInt32, profile: ChromeProfile) {

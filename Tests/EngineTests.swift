@@ -195,6 +195,49 @@ final class TestSystem: SystemAccessProtocol {
         await settle(following) { following.lastError != nil }
         check(following.lastError != nil && following.state.assignments[0].desktopID == "home", "Failed group movement after a manual move preserves the last confirmed assignment")
         following.state.enabled = false
+
+        let noSpaces = TestSystem(); noSpaces.failedSpaceReads = 1
+        let catalog = make(noSpaces)
+        check(catalog.chromeProfiles.count == 2, "Chrome profile catalog is loaded even when the Space snapshot fails")
+        catalog.state.enabled = false
+        let unreadable = Engine(dataURL: root.appendingPathComponent("unreadable-state.json"), system: TestSystem(), chromeProfilesURL: root.appendingPathComponent("missing-catalog"))
+        unreadable.refresh(full: true)
+        check(unreadable.chromeProfiles.isEmpty && unreadable.chromeCatalogStatus.contains("unavailable"), "Missing profile catalog exposes an error instead of silently showing zero profiles")
+        check(unreadable.chromeCatalogCountLabel == "Unavailable", "An unreadable catalog is not reported as zero profiles")
+        let failedAttempts = unreadable.chromeCatalogReadAttempts
+        unreadable.refresh(full: true); unreadable.checkAccessibility()
+        check(unreadable.chromeCatalogReadAttempts == failedAttempts, "Background refreshes and activations do not repeatedly read a denied catalog")
+        unreadable.checkAccessibility(retryChromeCatalog: true)
+        check(unreadable.chromeCatalogReadAttempts == failedAttempts + 1, "Explicit Refresh immediately retries catalog access")
+        unreadable.connectChromeProfiles(to: chrome)
+        check(unreadable.chromeProfiles.count == 2 && unreadable.state.chromeCatalogBookmark != nil, "Connecting a selected profile catalog loads profiles and saves its bookmark")
+        check(unreadable.chromeCatalogAvailable && unreadable.chromeConnectionStatus.contains("successfully") && unreadable.lastError == nil, "Successful connection is visible and clears the previous error")
+        let savedBookmark = unreadable.state.chromeCatalogBookmark
+        let invalid = root.appendingPathComponent("Preferences")
+        try Data(#"{"profile":{"name":"Not the catalog"}}"#.utf8).write(to: invalid)
+        unreadable.connectChromeProfiles(to: invalid)
+        check(unreadable.state.chromeCatalogBookmark == savedBookmark && unreadable.chromeProfiles.count == 2 && unreadable.chromeConnectionStatus.contains("Could not connect"), "An invalid selection reports failure and preserves the connected catalog")
+        let connected = Engine(dataURL: root.appendingPathComponent("unreadable-state.json"), system: TestSystem())
+        connected.refresh(full: true)
+        check(connected.chromeProfiles.count == 2, "The selected Chrome profile catalog is restored on restart")
+        let beforeEvents = connected.events
+        connected.event(NSWorkspace.didActivateApplicationNotification.rawValue, pid: getpid(), windowID: nil)
+        check(connected.events == beforeEvents, "DeskPilot activation does not trigger another managed-window refresh")
+
+        let cachedFile = root.appendingPathComponent("temporary-catalog")
+        try Data(#"{"profile":{"info_cache":{"Default":{"name":"Work"}}},"unrelated_secret":"must not persist"}"#.utf8).write(to: cachedFile)
+        let cachedState = root.appendingPathComponent("cached-state.json")
+        let caching = Engine(dataURL: cachedState, system: TestSystem(), chromeProfilesURL: cachedFile)
+        caching.connectChromeProfiles(to: cachedFile)
+        try FileManager.default.removeItem(at: cachedFile)
+        let cachedSystem = TestSystem()
+        cachedSystem.windows = [window(91, app: "com.google.Chrome", title: "Page - Google Chrome"), window(92, app: "com.google.Chrome", title: "Page - Google Chrome - Work")]
+        let offline = Engine(dataURL: cachedState, system: cachedSystem)
+        offline.refresh(full: true)
+        check(offline.chromeProfiles.count == 1 && !offline.chromeCatalogAvailable && offline.chromeCatalogCountLabel == "1 saved", "A later read failure retains a clearly marked saved catalog across restart")
+        check(offline.windows[0].group == nil && offline.windows[1].profileDirectory == "Default", "Saved profiles require an explicit window profile suffix rather than a single-profile guess")
+        let persisted = try String(contentsOf: cachedState, encoding: .utf8)
+        check(!persisted.contains("unrelated_secret") && !persisted.contains("must not persist") && persisted.contains("chromeCatalogProfiles"), "Only profile names and IDs are retained, not the source catalog")
         print("PASS: \(checks) engine checks")
     }
 }
