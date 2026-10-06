@@ -1,4 +1,4 @@
-Portions of space_move.m are adapted from Hammerspoon PR #3889 by franzbu,
+Portions of Sources/NativeSupport.m are adapted from Hammerspoon PR #3889 by franzbu,
 commit 8cde946e79d7a3e3d9aca366264a09a734b295bb (2026-08-16).
 https://github.com/Hammerspoon/hammerspoon/pull/3889
 

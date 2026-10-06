@@ -2,7 +2,7 @@
 set -eu
 DESKPILOT_PROJECT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 DESKPILOT_BUILD="$DESKPILOT_PROJECT/.build"
-DESKPILOT_APP="$DESKPILOT_BUILD/DeskPilot Native.app"
+DESKPILOT_APP="$DESKPILOT_BUILD/DeskPilot.app"
 DESKPILOT_ICONSET="$DESKPILOT_BUILD/AppIcon.iconset"
 mkdir -p "$DESKPILOT_BUILD/cache" "$DESKPILOT_APP/Contents/MacOS" "$DESKPILOT_APP/Contents/Resources"
 mkdir -p "$DESKPILOT_ICONSET"
@@ -24,19 +24,19 @@ cat > "$DESKPILOT_APP/Contents/Info.plist" <<'PLIST'
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>pl.deskpilot.native</string>
 <key>CFBundleExecutable</key><string>DeskPilotNative</string>
-<key>CFBundleName</key><string>DeskPilot Native</string>
-<key>CFBundleDisplayName</key><string>DeskPilot Native</string>
+<key>CFBundleName</key><string>DeskPilot</string>
+<key>CFBundleDisplayName</key><string>DeskPilot</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
-<key>CFBundleVersion</key><string>3</string>
-<key>CFBundleShortVersionString</key><string>0.1.2</string>
+<key>CFBundleVersion</key><string>4</string>
+<key>CFBundleShortVersionString</key><string>0.2.0</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSUIElement</key><false/>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSPrincipalClass</key><string>NSApplication</string>
-<key>NSAccessibilityUsageDescription</key><string>DeskPilot odczytuje i układa okna na wybranych biurkach.</string>
+<key>NSAccessibilityUsageDescription</key><string>DeskPilot reads and arranges windows on your chosen desktops.</string>
 </dict></plist>
 PLIST
-cp "$DESKPILOT_PROJECT/LICENSE-Hammerspoon.txt" "$DESKPILOT_APP/Contents/Resources/"
+cp -R "$DESKPILOT_PROJECT/ThirdPartyNotices" "$DESKPILOT_APP/Contents/Resources/"
 codesign --force --sign - --identifier pl.deskpilot.native "$DESKPILOT_APP"
 printf '%s\n' "$DESKPILOT_APP"

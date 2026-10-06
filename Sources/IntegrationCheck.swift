@@ -13,8 +13,8 @@ import AppKit
             guard let spaces = access.spaces(displays: displays) else { finish(["ok": false, "reason": "spaces_unavailable"]); return }
             let test = NSWindow(contentRect: NSRect(x: 100, y: 150, width: 400, height: 170), styleMask: [.titled, .closable], backing: .buffered, defer: false)
             test.isReleasedWhenClosed = false
-            test.title = "DeskPilot — okno testowe"
-            let label = NSTextField(labelWithString: "Sprawdzam ruch tego okna i powrót na miejsce.\nTwoje pozostałe okna pozostają bez zmian.")
+            test.title = "DeskPilot — test window"
+            let label = NSTextField(labelWithString: "Testing this window’s move and return.\nYour existing windows stay in place.")
             label.frame = NSRect(x: 24, y: 45, width: 350, height: 75)
             test.contentView?.addSubview(label)
             window = test

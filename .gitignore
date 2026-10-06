@@ -1,19 +1,6 @@
-# Local runtime state, personal exports and installation backups.
-/backups/
-/exports/
-/migration/
-/hammerspoon-settings.plist
-/settings.plist
-DeskPilot-settings*.json
-
-# Generated distribution files and machine-specific binaries.
-/dist/
-/build/
-/native/bin/
-/macos/.build/
+.build/
 .DS_Store
-
-# Local credentials and signing identities never belong in source control.
+*.xcuserstate
 .env
 .env.*
 *.p12

@@ -1,0 +1,53 @@
+{
+  "version": "0.2.0",
+  "date": "2026-10-07",
+  "platform": "macOS 27.0.1 / Apple Silicon",
+  "build": "passed",
+  "coreChecks": {
+    "passed": 43,
+    "failed": 0
+  },
+  "engineChecks": {
+    "passed": 25,
+    "failed": 0,
+    "environment": "Actual routing engine with an injected simulated desktop service and synthetic Chrome profile catalog. No live application windows or user settings are accessed.",
+    "coverage": [
+      "A new app receives a newly created desktop even when an empty desktop exists",
+      "Existing assignments are reused for subsequent windows",
+      "App windows move together and Chrome profiles remain separate",
+      "Automatic app and exact Chrome profile desktop names, custom rename and reset",
+      "Late native window IDs and delayed profile metadata",
+      "Queued windows survive a busy engine and arrivals during an awaited move",
+      "Conflicting Chrome identities do not reuse a cached profile",
+      "Explicit profile selection takes priority and queues routing",
+      "An earlier scheduled refresh does not consume the enable-automation retry",
+      "Temporary Space snapshot failure recovers through a bounded retry",
+      "Failed creation leaves windows untouched; failed movement pauses automation",
+      "Failed movement retries reuse the already created desktop",
+      "A failed group move after a manual move preserves the last confirmed assignment"
+    ]
+  },
+  "iconVerification": {
+    "source": "Resources/AppIcon.png",
+    "providedBy": "project owner",
+    "standardAndRetinaSizes": true,
+    "bundleReference": "AppIcon",
+    "containerValidation": "passed",
+    "codeSignature": "passed"
+  },
+  "notYetVerified": [
+    "Live Chrome profile recognition and automatic routing in this build",
+    "Mission Control desktop creation and switching on the target system in this build",
+    "Window management permission for the packaged GUI application",
+    "Full layout restoration with multiple external displays",
+    "Disconnect and reconnect on the target monitor setup",
+    "Idle and active automation resource benchmarks"
+  ],
+  "manualTestLimitation": "The computer-use tool blocked access to the current browser page. Live browser and GUI checks were stopped; simulated tests are not presented as live verification.",
+  "namingScope": "Custom and automatic names appear in DeskPilot and its menu bar. Mission Control retains system labels.",
+  "bundleValidation": {
+    "infoPlist": "passed",
+    "architecture": "arm64",
+    "adHocSignature": "passed"
+  }
+}

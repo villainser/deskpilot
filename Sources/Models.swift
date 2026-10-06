@@ -25,12 +25,48 @@ struct WindowInfo: Identifiable {
     let appID: String
     let appName: String
     let title: String
-    let frame: CGRect
-    let spaceIDs: [UInt64]
+    var frame: CGRect
+    var spaceIDs: [UInt64]
     let minimized: Bool
     var group: String?
     var profileName: String?
     var profileDirectory: String?
+    var accessibilityTitles: [String] = []
+    var identity: WindowIdentity { WindowIdentity(pid: pid, windowID: id) }
+}
+
+struct WindowIdentity: Hashable {
+    let pid: Int32
+    let windowID: UInt32
+}
+
+struct RoutingInbox {
+    private(set) var pending: [WindowIdentity: Date] = [:]
+    mutating func enqueue(_ identity: WindowIdentity, now: Date = Date()) {
+        if pending[identity] == nil { pending[identity] = now.addingTimeInterval(12) }
+    }
+    mutating func reconcile(live: Set<WindowIdentity>, now: Date = Date()) {
+        pending = pending.filter { live.contains($0.key) || $0.value > now }
+    }
+    func candidates(in windows: [WindowInfo]) -> [WindowInfo] {
+        windows.filter { pending[$0.identity] != nil && $0.group != nil && $0.spaceIDs.count == 1 }
+    }
+    var isEmpty: Bool { pending.isEmpty }
+    func needsRetry(now: Date = Date()) -> Bool { pending.values.contains { $0 > now } }
+    mutating func complete(_ identities: [WindowIdentity]) { for identity in identities { pending[identity] = nil } }
+    mutating func remove(_ identity: WindowIdentity) { pending[identity] = nil }
+    mutating func clear() { pending.removeAll() }
+}
+
+enum DesktopNaming {
+    static func name(for desktop: Desktop, customNames: [String: String], assignments: [Assignment], windows: [WindowInfo]) -> String {
+        if let custom = customNames[desktop.id]?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty { return custom }
+        // Assignments remain authoritative while apps are closed or AX data is delayed.
+        let assigned = assignments.filter { $0.desktopID == desktop.id }.map { $0.profileName ?? $0.appName }
+        let visible = windows.filter { $0.spaceIDs.contains(desktop.systemID) }.map { $0.profileName ?? $0.appName }
+        let labels = Set(assigned.isEmpty ? visible : assigned).sorted()
+        return labels.isEmpty ? "Desktop \(desktop.ordinal + 1)" : labels.joined(separator: " + ")
+    }
 }
 
 struct Assignment: Codable, Identifiable, Equatable {
@@ -122,12 +158,38 @@ enum ChromeResolver {
     }
 
     static func resolve(title: String, profiles: [ChromeProfile]) -> ChromeProfile? {
+        let title = normalized(title)
         guard let marker = title.range(of: "Google Chrome", options: .backwards) else { return nil }
         let tail = title[marker.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        // Chromium omits the profile suffix when exactly one regular profile exists.
+        // Incognito/Guest add a suffix, so they must never use this fallback.
+        if tail.isEmpty { return profiles.count == 1 ? profiles[0] : nil }
         guard let first = tail.first, "-–—|:".contains(first) else { return nil }
         let name = tail.dropFirst().trimmingCharacters(in: .whitespacesAndNewlines)
-        let matches = profiles.filter { $0.name == name }
+        let matches = profiles.filter { normalized($0.name) == name }
         return matches.count == 1 ? matches[0] : nil
+    }
+
+    static func hasIdentitySuffix(_ title: String) -> Bool {
+        let clean = normalized(title)
+        guard let marker = clean.range(of: "Google Chrome", options: .backwards) else { return false }
+        return !clean[marker.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    static func resolve(titles: [String], profiles: [ChromeProfile]) -> ChromeProfile? {
+        let annotated = titles.filter(hasIdentitySuffix)
+        let candidates = annotated.isEmpty ? titles : annotated
+        let matches = candidates.compactMap { resolve(title: $0, profiles: profiles) }
+        // A richer native title (including Guest/Incognito/unknown identity)
+        // must override the single-profile fallback from a shorter title.
+        if !annotated.isEmpty && matches.count != annotated.count { return nil }
+        return Set(matches.map(\.id)).count == 1 ? matches.first : nil
+    }
+
+    private static func normalized(_ text: String) -> String {
+        let formatting = CharacterSet(charactersIn: "\u{200e}\u{200f}\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2066}\u{2067}\u{2068}\u{2069}")
+        let clean = String(text.unicodeScalars.filter { !formatting.contains($0) }).precomposedStringWithCanonicalMapping
+        return clean.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
     }
 }
 

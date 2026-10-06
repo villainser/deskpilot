@@ -10,7 +10,7 @@ final class AppInstance {
     init(directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         descriptor = open(directory.appendingPathComponent("instance.lock").path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
-        if descriptor < 0 { throw AppError.message("Nie udało się otworzyć blokady aplikacji.") }
+        if descriptor < 0 { throw AppError.message("Unable to acquire the application lock.") }
     }
     func acquire() -> Bool { flock(descriptor, LOCK_EX | LOCK_NB) == 0 }
     deinit { close(descriptor) }
@@ -66,7 +66,7 @@ final class Hotkeys {
         engine.start()
         engine.writeRuntimeStatus()
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "DeskPilot Native"
+        window.title = "DeskPilot"
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         window.isReleasedWhenClosed = false
         window.delegate = self
@@ -80,7 +80,7 @@ final class Hotkeys {
         }
         hotkeys.action = { [weak self] id in Task { @MainActor in self?.hotkey(id) } }
         hotkeys.start()
-        if !hotkeys.failures.isEmpty { engine.lastError = "Niektóre skróty są zajęte przez inny program. Dostępne są również przyciski w panelu." }
+        if !hotkeys.failures.isEmpty { engine.lastError = "Some shortcuts are used by another app. The panel controls remain available." }
         if !args.contains("--background") { show() }
         if args.contains("--smoke") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { NSApp.terminate(nil) }
@@ -98,11 +98,11 @@ final class Hotkeys {
     func makeApplicationMenu() {
         let root = NSMenu()
         let appItem = NSMenuItem(); root.addItem(appItem)
-        let menu = NSMenu(title: "DeskPilot Native")
-        let showItem = NSMenuItem(title: "Pokaż panel", action: #selector(show), keyEquivalent: "0"); showItem.target = self; menu.addItem(showItem)
+        let menu = NSMenu(title: "DeskPilot")
+        let showItem = NSMenuItem(title: "Show panel", action: #selector(show), keyEquivalent: "0"); showItem.target = self; menu.addItem(showItem)
         menu.addItem(.separator())
-        let hide = NSMenuItem(title: "Ukryj DeskPilot", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"); hide.target = NSApp; menu.addItem(hide)
-        let quit = NSMenuItem(title: "Zakończ DeskPilot", action: #selector(quit), keyEquivalent: "q"); quit.target = self; menu.addItem(quit)
+        let hide = NSMenuItem(title: "Hide DeskPilot", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"); hide.target = NSApp; menu.addItem(hide)
+        let quit = NSMenuItem(title: "Quit DeskPilot", action: #selector(quit), keyEquivalent: "q"); quit.target = self; menu.addItem(quit)
         appItem.submenu = menu
         NSApp.mainMenu = root
     }
@@ -127,7 +127,7 @@ final class Hotkeys {
         item.button?.image = NSImage(systemSymbolName: "rectangle.3.group", accessibilityDescription: "DeskPilot")
         item.button?.imagePosition = .imageLeading
         let menu = NSMenu()
-        let open = NSMenuItem(title: "Otwórz DeskPilot", action: #selector(show), keyEquivalent: "")
+        let open = NSMenuItem(title: "Open DeskPilot", action: #selector(show), keyEquivalent: "")
         open.target = self; menu.addItem(open)
         menu.addItem(.separator())
         for display in engine.displays {
@@ -138,8 +138,8 @@ final class Hotkeys {
             }
         }
         menu.addItem(.separator())
-        let paused = NSMenuItem(title: engine.state.enabled ? "Wstrzymaj automatykę" : "Włącz automatykę", action: #selector(pause), keyEquivalent: ""); paused.target = self; menu.addItem(paused)
-        let exit = NSMenuItem(title: "Zakończ DeskPilot", action: #selector(quit), keyEquivalent: "q"); exit.target = self; menu.addItem(exit)
+        let paused = NSMenuItem(title: engine.state.enabled ? "Pause automation" : "Enable automation", action: #selector(pause), keyEquivalent: ""); paused.target = self; menu.addItem(paused)
+        let exit = NSMenuItem(title: "Quit DeskPilot", action: #selector(quit), keyEquivalent: "q"); exit.target = self; menu.addItem(exit)
         item.menu = menu
     }
 

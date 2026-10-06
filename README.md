@@ -1,244 +1,92 @@
-# DeskPilot — biurka dla aplikacji i profili Chrome
+<p align="center"><img src="Resources/AppIcon.png" width="150" alt="DeskPilot icon"></p>
 
-## DeskPilot Native — samodzielna aplikacja macOS
+# DeskPilot
 
-Nowa aplikacja SwiftUI/AppKit jest w katalogu **[macos/](macos/README.md)**. Nie wymaga Hammerspoona ani WebKit. Zachowuje prawdziwe Spaces i Mission Control, zarządza przypisaniami aplikacji i rozpoznanych profili Chrome, zapisuje układy monitorów oraz pozwala układać okna obok siebie. Ma ikonę w Docku, menu na pasku systemowym i przycisk całkowitego zakończenia.
+A native macOS desktop manager built with Swift, SwiftUI and AppKit. Give each app and Chrome profile a place, name your desktops, and save window layouts for your displays.
 
-```sh
-sh macos/build.sh
-sh macos/test.sh
-open "macos/.build/DeskPilot Native.app"
-```
+## Features
 
-Wymagane: Apple Silicon, macOS 14+ i Apple Command Line Tools. Jest to wersja rozwojowa 0.1.2; testy reguł oraz wskazane próby na macOS 27.0.1 opisano w [instrukcji](macos/README.md) i [raporcie weryfikacji](macos/VERIFICATION.json). Pełne przywracanie układów z monitorami zewnętrznymi i porównanie zużycia zasobów nadal wymagają sprawdzenia. Nazwy biurek są widoczne w aplikacji i na pasku menu; etykiety Mission Control pozostają systemowe.
+- **Automatic desktops.** An unassigned app or Chrome profile gets a newly created macOS desktop. Its other windows join the same desktop; reopening it reuses the saved assignment while that desktop exists.
+- **Names that make sense.** Desktops use their assigned app or Chrome profile name. Choose a custom name with the pencil or the desktop context menu, or switch back to automatic naming.
+- **Chrome profiles.** Match profiles by their stable profile directories and the profile information exposed by Chrome's native accessibility window title. Windows belonging to different profiles are kept separate.
+- **Shared desktops.** Add another app to a desktop and place windows on the left or right half of the display.
+- **Display layouts.** Save assignments and window geometry for a display setup. Restore a matching layout when displays change, with a default layout for one display.
+- **Native integration.** Keep macOS Spaces, Mission Control, gestures and manual desktop ordering. Access DeskPilot from the Dock, menu bar or keyboard.
+- **Event-based updates.** Window and workspace events trigger reads. Startup retries are bounded; unresolved live windows can resume when their title or profile information changes.
 
-Na macOS 27 wymagane uprawnienie znajduje się w **Prywatność i ochrona → Sterowanie urządzeniami i dostęp do danych**. Po lokalnej przebudowie może być konieczne usunięcie starego wpisu i ponowne dodanie właściwego pliku aplikacji. Przed włączeniem automatyki wstrzymaj DeskPilot w Hammerspoonie.
+Custom desktop names appear in DeskPilot and the menu bar. Mission Control keeps Apple's system labels. No separate naming permission is needed.
 
-## DeskPilot 2 — wersja Hammerspoon
+## Build
 
-Konfiguracja Hammerspoon dla macOS: domyślnie **jedna aplikacja = jedno zwykłe biurko**, wszystkie jej standardowe okna razem. Dla Google Chrome obowiązuje **jeden profil = jedno biurko**: wszystkie jego okna i karty razem. DeskPilot pamięta układ ostatniej sesji, może uruchomić zapisane aktywne aplikacje i dopasowuje ich biurka do rzeczywiście podłączonych monitorów. Gdy na wybranym monitorze brakuje wolnego biurka, tworzy nowe.
-
-## Zasady działania
-
-W zwykłej pracy automatyczne przypisywanie nowych okien zachowuje ich rozmiar. Gdy świadomie otwierasz nowe okno na pierwszym planie, DeskPilot po potwierdzonym przeniesieniu może przejść za nim na docelowe biurko. Istniejące okna nie są stale rozstawiane od nowa. Osobny mechanizm **przywracania sesji** może odtworzyć zapisane położenie i rozmiar po nowym logowaniu, zmianie zestawu monitorów lub jawnym poleceniu przywrócenia, bez podążania za odtwarzanymi oknami. Przeładowanie Hammerspoon w tej samej sesji macOS nie ponawia już obsłużonych pozycji. Ręczne przeniesienie aplikacji lub profilu nadal obejmuje pozostałe jego okna i ma pierwszeństwo przed oczekującym automatycznym ruchem.
-
-- Przypisanie pamięta UUID monitora i UUID biurka. Numer biurka służy do wyświetlania i skrótów; zmiana numeracji nie zmienia przypisania.
-- Ręczne przestawienie całych biurek w Mission Control odświeża kolejność w panelu i skrótach. Aplikacje pozostają przypisane do swoich biurek; DeskPilot nie odwraca Twojego porządku.
-- Wolne biurka są wybierane lokalnie na wskazanym monitorze. Nie ma przerzucania na inny ekran tylko dlatego, że jest tam wolne miejsce.
-- Przeniesienie przez `Ctrl+Shift+numer` zapamiętuje nowy cel aplikacji. Ruch przez Mission Control jest rozpoznawany po ustabilizowaniu położenia przez około 2–3 sekundy. Pozostałe okna aplikacji dostają ten sam cel.
-- Ręczne umieszczenie kilku aplikacji na jednym biurku jest zapamiętywanym wyjątkiem od rozdzielania aplikacji.
-- Zmiana tytułu, przywrócenie z Docka i fokus nie wymuszają powrotu do starego biurka.
-- Na każdym monitorze zawsze zostaje co najmniej jedno zwykłe biurko — również gdy wszystkie biurka są puste.
-- Sprzątanie ma dwa etapy: najpierw wykrycie całego zestawu pustych, nieaktywnych biurek i potwierdzenie pustki przez co najmniej 8 sekund, potem usunięcie całej partii przy jednym otwarciu Mission Control. Przed każdym usunięciem ponownie sprawdzana jest zajętość i tożsamość biurka. Następne biurka zachowują tożsamość; zmieniają się jedynie ich numery.
-- Zawsze pozostaje przynajmniej jedno zwykłe biurko na każdy ekran. Aktualnie wyświetlane puste biurko zostaje do momentu przełączenia na inne. DeskPilot nie przełącza użytkownikowi biurka tylko po to, żeby je skasować.
-- Nieznane okno, brak metadanych albo błąd odczytu blokują kasowanie. Uwzględniane są nieaktywne biurka, okna zminimalizowane i aplikacje ukryte.
-- Blokada Maca chowa podglądy i zatrzymuje ruchy okien, uczenie przypisań oraz sprzątanie. Po odblokowaniu automat czeka 8 sekund i odczytuje zastany układ, zachowując zapisany stan pauzy.
-- Po zmianie monitorów/wybudzeniu obowiązuje 8 sekund stabilizacji. Przywracanie sesji dodatkowo wymaga kompletnego, stabilnego odczytu monitorów, biurek i okien. Jeżeli poprzedniego monitora nie ma, układ jest świadomie dopasowywany według opisanych niżej ról aplikacji.
-- Tworzenie i ruch okien są wykonywane kolejno. Zapis celu następuje dopiero po odczycie potwierdzającym faktyczne położenie okna. Niepotwierdzony ruch wstrzymuje automatykę.
-
-## Instalacja
-
-Instalujesz na drugim komputerze? Zobacz [instrukcję przeniesienia DeskPilot na nowy Mac](PRZENOSZENIE.md), z bezpiecznym startem i opcjonalnym transferem pamięci układu.
-
-Wymagania: Hammerspoon z uprawnieniem Dostępność oraz Apple Command Line Tools do kompilacji helpera. Ustawienia macOS: „Monitory mają osobne przestrzenie” włączone; „Automatycznie porządkuj przestrzenie według ostatniego użycia” wyłączone.
-
-Z katalogu projektu:
+Requirements: an Apple Silicon Mac, macOS 14 or later, and Apple Command Line Tools.
 
 ```sh
-sh native/build.sh
-./install.sh
+sh build.sh
+sh test.sh
+open .build/DeskPilot.app
 ```
 
-Instalator kopiuje pliki do `~/.hammerspoon`, a poprzednie pliki i ustawienia do `~/.hammerspoon/backups/deskpilot-DATA-PID`. Zastępuje `init.lua` wersją z tego projektu, dlatego najpierw tworzy jego kopię. Nie zmienia ustawień Mission Control ani ochrony SIP.
+The build produces `.build/DeskPilot.app`, including standard and Retina icon sizes. The source is organized into `Sources/`, `Tests/`, `Resources/` and `ThirdPartyNotices/`.
 
-Pierwsze uruchomienie wersji 2 jest wstrzymane. Kliknij **Desk:**, sprawdź monitory i wybierz **Wznów** na dole panelu. To samo polecenie w menu ustawień ma etykietę `Wznow automatyke`. Kolejne przeładowania zachowują ostatni stan pauzy. Zwykłe automatyczne przypisywanie dotyczy nowych okien potwierdzonych w globalnej liście WindowServer; samo odkrycie starego okna na innym biurku nie jest powodem jego przeniesienia. Włączona automatyka pozwala również dokończyć oczekujące przywracanie zapisanej sesji.
+## Set up
 
-Na komputerze testowym włączono start Hammerspoon przy logowaniu. Uprawnienie Dostępność było nadane, osobne Spaces były włączone, a automatyczne przestawianie wyłączone.
+1. Open DeskPilot and choose **Grant access**. On macOS 27, enable the app in **Privacy & Security → Device Control and Data Access**. Earlier macOS versions call this permission **Accessibility**. Return to DeskPilot to check access.
+2. In **System Settings → Desktop & Dock**, disable automatic Space reordering and enable **Displays have separate Spaces**.
+3. Choose **Enable automation** to assign your open standard windows and handle new windows automatically. **Organize now** runs the same assignment rules on demand.
+4. Use **Add app** to share a desktop. Use the window menu or keyboard shortcuts to arrange windows side by side.
+5. Save a layout for your laptop and mark it as the single-display default. Save another layout with external displays connected.
 
-## Obsługa
+Closing the panel keeps DeskPilot running. **Quit DeskPilot** or **Command-Q** terminates the app. Only one instance can manage the same settings directory.
 
-| Skrót / menu | Działanie |
+Local builds use an ad hoc signature. If access stops working after a rebuild, remove the existing permission entry and add the exact application you are running. **Show this app in Finder** identifies that file.
+
+## Keyboard shortcuts
+
+| Shortcut | Action |
 | --- | --- |
-| Kliknięcie `Desk:` lub `Ctrl+Alt+Space` | Pokaż/ukryj wysuwany panel biurek. |
-| `Option` + kliknięcie `Desk:` | Otwórz dotychczasowe menu ustawień i przypisań. |
-| Ikona suwaków na dole panelu | Otwórz to samo menu ustawień. |
-| Panel → `Organizuj teraz` | Jednorazowo rozdziel aplikacje i profile Chrome współdzielące biurka na wszystkich monitorach. |
-| Panel → `Podążaj za nowym oknem` | Włącz/wyłącz przechodzenie za świadomie otwartym nowym oknem. Preferencja jest zapamiętywana. |
-| `Ctrl+1…9`, `Ctrl+0`, `Ctrl+-` | Przełącz na biurko 1…11. |
-| `Ctrl+Shift+1…9/0/-` | Przenieś aktywne okno i zapamiętaj cel aplikacji. |
-| `Ctrl+Esc` | Pokaż/ukryj tę samą listę biurek z podglądami. |
-| `Ctrl+Alt+Cmd+P` | Natychmiast wstrzymaj automatykę. |
-| Menu → `Wstrzymaj automatyke` / `Wznow automatyke` | Pauza / wznowienie. |
-| Menu → `Przypisz aplikacje do...` | Jawne przypisanie, także do wspólnego biurka. |
-| Menu → `Przypisz to okno/profil...` | Opcjonalny wyjątek według tytułu. |
-| Menu → `Usun puste, nieaktywne biurka` | Usunięcie wykrytej partii w jednej sesji Mission Control, z tymi samymi zabezpieczeniami. Działa przy włączonej automatyce. |
-| Menu → `Pamięć układu i start programów` → `Zapisz układ teraz` | Zapisz aktualny układ po uzyskaniu stabilnego odczytu. |
-| Menu → `Pamięć układu i start programów` → `Przywróć zapisany układ` | Jawnie rozpocznij przywracanie zapisanego układu. |
+| Control–Option–Space | Show or hide the panel |
+| Control–Option–1…9 | Switch desktop |
+| Control–Option–Shift–1…9 | Assign the focused app or Chrome profile to a desktop |
+| Control–Option–Left / Right | Place the focused window on the left or right half |
+| Control–Option–P | Pause or resume automation |
+| Command-Q | Quit while DeskPilot is focused |
 
-W tabeli „Menu” oznacza menu ustawień otwierane przez `Option` + kliknięcie `Desk:` albo ikonę suwaków w panelu. Numery pokazują bieżącą kolejność zwykłych Spaces. Nazwy i monitory są widoczne w panelu oraz ustawieniach. Apple nie pozwala tym mechanizmem podmienić nazw w samym Mission Control — nakładka z nazwami należy do DeskPilot.
+Desktop numbers follow the current display and Space order. Assignments and names follow the Space's identity when it is reordered or moved to another display.
 
-### Podążanie za nowym oknem
+## Chrome profile matching
 
-Na dole panelu przełącznik **Podążaj za nowym oknem** trwale zapamiętuje Twój wybór, także po przeładowaniu i logowaniu. Wyłączenie podążania zachowuje przydzielanie nowych okien do biurek; pozostajesz w bieżącym miejscu.
+DeskPilot reads profile names and directory identifiers from Chrome's local profile catalog. It checks the native window's accessible title, including its immediate native root title when available. With one regular Chrome profile, Chrome can omit the profile suffix; DeskPilot handles that case. Profile names with Unicode formatting or nonbreaking spaces are normalized before matching.
 
-Przy włączonym przełączniku otwierasz program albo nowe okno profilu Chrome i pozostajesz w tym oknie: po automatycznym przydzieleniu do biurka DeskPilot przechodzi za nim, aby można było od razu pracować. Wymaga to potwierdzenia, że okno jest nowe, trafiło na pierwszym planie po niedawnej interakcji użytkownika i zostało poprawnie przeniesione. Chrome nadal ma **jedno biurko na profil**; kolejne okno trafia na biurko swojego profilu, a karty pozostają razem.
+Incognito, guest windows, duplicate profile names and conflicting identity information are not assigned by guessing. If Chrome does not expose enough information, use **Choose profile…**. An explicit choice takes priority for that window and immediately queues it for assignment when automation is enabled. No tabs are detached, and page contents are not traversed to identify a profile.
 
-Kliknięcie, wybór innego okna lub zmiana biurka anuluje oczekujące podążanie. Pisanie w tym samym nowym oknie, zanim rozpocznie się ruch, zachowuje zamiar podążania; wejście użytkownika po rozpoczęciu ruchu nadal je anuluje. Nie jest ono odkładane do późniejszego wykonania. Program otwarty w tle, zastane okna po reloadzie, przywracanie sesji i autostart zapisanych aplikacji nie wywołują takiego przejścia. Podczas uruchamiania systemu podążanie jest wyciszone, żeby odtwarzany układ nie przełączał kolejno biurek.
+Names are matched according to Chromium's [accessible window title](https://chromium.googlesource.com/chromium/src/+/main/chrome/browser/ui/views/frame/browser_view.cc) behavior. Matching and routing regressions are covered by local tests with synthetic windows and profiles.
 
-Po nowym logowaniu **pierwsza minuta jest bez podążania**, również za oknami na pierwszym planie. Zwykły reload nie rozpoczyna tej minuty od nowa i nie przywraca pominiętych przejść. Potem nadal wymagane jest dokładnie to nowe, aktywne okno i niedawna interakcja użytkownika.
+## Reliability and privacy
 
-Ta funkcja obejmuje zarządzane zwykłe okna. Natywny pełny ekran, Split View, okna na wszystkich Spaces i nierozpoznany profil Chrome pozostają objęte dotychczasowymi wyjątkami; nie ma gwarancji przejęcia fokusu w każdym trybie macOS.
+- A desktop assignment is saved only after macOS confirms the window's destination.
+- A failed automatic creation or movement pauses automation. Retrying a failed move reuses the desktop already created in that session.
+- Late native window IDs, delayed Chrome titles and windows created while another operation is running stay queued until they can be processed.
+- Saved names take priority over temporary window titles. Clearing a custom name restores the app or profile name.
+- Settings stay on this Mac. No screenshots are captured and no network service is used by the app. Layouts store window-title hashes rather than full titles or tab URLs.
+- Settings are stored in `~/Library/Application Support/DeskPilot Native/state.json`. Invalid settings files are preserved rather than overwritten.
 
-### Organizuj teraz — jednorazowe rozdzielenie aplikacji
+## Verification and limitations
 
-Przycisk **Organizuj teraz** na dole panelu sprawdza wszystkie monitory. Na biurku współdzielonym przez różne aplikacje lub profile Chrome pozostawia jedną grupę, a pozostałe przenosi na wolne albo nowe biurka **tego samego monitora**. Wszystkie dostępne standardowe okna danej aplikacji albo rozpoznanego profilu Chrome pozostają razem. Nie jest to stała reguła rozbijająca ręcznie wspólne biurka — działa tylko po Twoim poleceniu.
+Version 0.2.0 is a development build. See [VERIFICATION.json](VERIFICATION.json) for the exact checks and remaining manual tests.
 
-Przy pauzie najpierw wybierz **Wznów**. Kliknięcie **Organizuj teraz** przyjmuje polecenie także podczas trwających zmian układu. Panel pokazuje **Czekam na układ**, a program czeka do **20 sekund** na stabilny, pełny odczyt biurek i zakończenie bieżących operacji. Gdy układ jest gotowy, rozpoczyna rozdzielanie. Jeśli nie uda się uzyskać odczytu w tym czasie, kończy oczekiwanie z komunikatem; możesz spróbować ponownie.
+The local suite includes policy tests and tests of the real routing engine against a simulated desktop service. It covers desktop creation, app and Chrome grouping, late metadata, busy queues, failure recovery and automatic/custom names. These tests do not substitute for a live multi-display test.
 
-Kolejna interakcja użytkownika anuluje oczekujące polecenie lub przerywa pozostałe ruchy; **Wstrzymaj** również je zatrzymuje. Już wykonane ruchy pozostają. Organizowanie nie podąża za oknami, również gdy przełącznik podążania jest włączony. Panel chowa się dopiero przed faktycznym rozpoczęciem organizowania; odmowa lub informacja, że układ jest już rozdzielony, pozostaje widoczna. Po ponownym otwarciu zobaczysz postęp lub wynik. Nierozpoznane okna pozostają na miejscu. Gdy system potwierdza istnienie niedostępnego okna rozpoznanej grupy, cała grupa jest pomijana; odwiedź jej biurka i ponów organizowanie.
+Space management uses private macOS functions and Accessibility. Compatibility must be checked after macOS updates. Standard windows and regular desktops are managed; native fullscreen and windows on all Spaces are excluded. Closed documents and tabs are not recreated. Desktops are never automatically deleted.
 
-### Pamięć ostatniej sesji i start programów
-
-DeskPilot zapisuje aplikacje i odrębne profile Chrome, UUID monitorów i biurek, lokalne pozycje biurek oraz położenie i rozmiar okien jako proporcje obszaru roboczego monitora. Dzięki temu może odtworzyć układ na ekranie o innej rozdzielczości. Ramka jest ograniczana do dostępnego obszaru. Przy kilku oknach dopasowanie geometrii wymaga jednoznacznego skrótu tytułu; program nie zgaduje kolejności okien. Jedno zapisane i jedno bieżące okno nie wymaga takiego dopasowania.
-
-Punktem wyjścia jest **najnowsza zapisana sesja**, również gdy pracowałeś ostatnio tylko na laptopie, a teraz podłączasz dwa monitory. Dawny zapis dla identycznego zestawu ekranów nie zastępuje nowszej pracy. DeskPilot sprawdza rzeczywistą liczbę i UUID monitorów w macOS; sama taka sama liczba ekranów nie oznacza tych samych urządzeń. Rozróżnienie ekranu wbudowanego i zewnętrznego pochodzi z systemu.
-
-| Aplikacje | Domyślny monitor przy odtwarzaniu i nowym przypisaniu |
-| --- | --- |
-| Teams, Wiadomości, Messenger, Bitwarden, Ustawienia systemowe, Terminal/iTerm i obsługiwane terminale | Ekran laptopa, jeśli jest dostępny. |
-| Chrome i jego profile, Chrome Canary, Edge, Brave, Firefox, Safari, Arc, Vivaldi, Opera | Monitor zewnętrzny, gdy jest dostępny. Poprawne istniejące przypisanie do zewnętrznego ekranu zostaje; grupy wymagające nowego celu są rozdzielane z uwzględnieniem powierzchni ekranów. |
-| Pozostałe aplikacje | Zapisany monitor, jeśli nadal jest obecny; w przeciwnym razie laptop albo pierwszy dostępny ekran. |
-
-Bez ekranu laptopa wykorzystywane są dostępne monitory. Bez ekranów zewnętrznych przeglądarki działają na laptopie. Zmiana docelowego monitora usuwa stare UUID biurka z odtwarzanego celu. Zastępcza pozycja musi wskazywać potwierdzone wolne biurko; program może też wybrać inne wolne albo utworzyć nowe. Nie odtwarza pustych luk i zawsze zachowuje minimum jedno zwykłe biurko na monitor.
-
-Po uzyskaniu kompletnych danych przywracanie czeka co najmniej **3 sekundy niezmiennego odczytu**. Próby uruchomienia brakujących programów zaczynają się dopiero po **20 sekundach stabilnie rozpoznawanego zestawu monitorów**; do tego dochodzą obowiązujące osłony po wybudzeniu, zmianie ekranów i interakcji użytkownika. Pauza, blokada Maca lub niepełny odczyt wstrzymują operacje.
-
-Do automatycznego uruchamiania służy lista aplikacji i profili potwierdzonych jako aktywne w ostatnim zapisie (`activeKeys`). Historia nieobecnych aplikacji pozostaje dostępna do zapamiętania układu, lecz nie uruchamia wszystkich dawniej używanych programów. Pusty lub częściowy odczyt podczas zamykania nie kasuje pełniejszego zapisu geometrii. Każda zapisana aplikacja/profil ma jedną próbę uruchomienia w danym cyklu przywracania; zwykły reload nie powtarza już wykonanych operacji.
-
-Chrome uruchamiany jest z zapisanym katalogiem profilu i własnym mechanizmem `--restore-last-session`. To Chrome odpowiada za dostępność poprzednich kart i okien. DeskPilot nie zapisuje ich adresów. Dla pozostałych aplikacji uruchomienie programu **nie gwarantuje otwarcia poprzednich dokumentów** — zależy to od jego obsługi przywracania stanu w macOS.
-
-Układ jest zapisywany automatycznie po stabilizacji. Oba polecenia menu pamięci działają przy włączonej automatyce; **Zapisz układ teraz** również wymaga stabilnego odczytu. Ręczny ruch lub zmiana okna podczas przywracania mają pierwszeństwo. Zapis sesji zawiera identyfikatory, geometrię i hashe tytułów do dopasowania okien, bez zrzutów ekranu, pełnych tytułów, URL-i czy treści dokumentów.
-
-Okna na wcześniej nieodwiedzonych biurkach mogą być jeszcze niedostępne w Accessibility. Oczekujące przywracanie aplikacji lub profilu może wtedy dokończyć się po jego rozpoznaniu, na przykład po Twoim wejściu na to biurko. DeskPilot nie przełącza sam kolejnych Spaces w celu ich odkrycia i nie powtarza przywracania pozycji już obsłużonych.
-
-Polecenia zapisu i przywrócenia pokazują potwierdzenie albo informację, że zapis nie jest jeszcze gotowy. Panel sygnalizuje nieudane uruchomienie części programów lub niepełne przywrócenie układu. Możesz wtedy sprawdzić okna, otworzyć brakujący program ręcznie i w razie potrzeby ponownie wybrać **Przywróć zapisany układ**.
-
-### Sprzątanie bez serii animacji
-
-Automat najpierw zbiera cały zestaw kandydatów. Jeśli kolejne biurko właśnie opustoszało, czeka na potwierdzenie jego pustki zamiast rozpoczynać kolejną małą partię. Po wykryciu zestawu usuwa biurka w jednej sesji Mission Control, weryfikując każde usunięcie. Pozostałe aplikacje zachowują swoje okna i biurka. Pojawienie się okna, utrata wiarygodnego odczytu, blokada, pauza lub zmiana monitorów przerywa albo ogranicza operację.
-
-Mission Control nadal pojawi się raz na partię — jest potrzebne używanemu mechanizmowi macOS. Panel podglądów sam go nie wywołuje.
-
-Jeśli ręcznie przerwiesz sprzątanie, jego automatyczne ponawianie zostanie wstrzymane. W ustawieniach wybierz **Wznów automatyczne sprzątanie**, aby je przywrócić; jeśli cała automatyka jest w pauzie, użyj **Wznow automatyke**.
-
-### Jedna lista biurek z podglądami
-
-Kliknij **Desk:** na pasku macOS albo naciśnij `Ctrl+Alt+Space` lub `Ctrl+Esc`. Wszystkie te wejścia otwierają ten sam panel. Wybierz monitor: każda karta biurka pokazuje własny podgląd reprezentującego je okna, także gdy biurko jest w tle. **Otwórz** na konkretnej karcie przechodzi bezpośrednio na jej biurko. Numer karty odpowiada aktualnej kolejności w Mission Control.
-
-Kliknięcie obrazu rozwija tę samą kartę i daje większy podgląd, wybór okna oraz **Powiększ / Dopasuj**. Powiększanie używa już pobranego obrazu. Nie ma osobnej listy służącej tylko do przełączania biurek.
-
-Po otwarciu panelu lub wybraniu monitora obrazy jego kart są pobierane kolejno, jeden raz. Potem pozostają statyczne; bezczynność i najazd myszą nie wywołują nowych zrzutów. **Odśwież podgląd** pobiera nowy obraz wybranego okna. Odczyt metadanych potrzebny do przypisywania nowych aplikacji działa osobno.
-
-**Włącz podglądy** wymaga zgody macOS na nagrywanie ekranu. Nie każde zminimalizowane lub chronione okno udostępnia obraz. Brak podglądu nie oznacza pustego biurka i nie powoduje przełączenia na inne okno. Panel pokazuje stan niedostępności przy właściwej karcie.
-
-Obrazy pozostają w pamięci; DeskPilot nie zapisuje ich do plików ani ich nie wysyła. Schowanie panelu, zmiana monitora, wyłączenie podglądów i blokada Maca usuwają obrazy. Bitwarden, Apple Hasła, Dostęp do pęku kluczy i inne rozpoznane menedżery haseł mają treść ukrytą. Chrome może pokazywać poufne strony i okna prywatne. Szczegóły: [BEZPIECZENSTWO.md](BEZPIECZENSTWO.md).
-
-Aby przenieść aplikację, najpierw kliknij jej okno, a potem otwórz panel. Rozwiń kartę docelowego biurka i wybierz **Przenieś „nazwa” tutaj**. Panel zapamiętuje okno aktywne przed otwarciem. W Chrome działa to na profil tego okna. Ołówek zmienia nazwę biurka. `Esc` lub kliknięcie poza panelem chowa panel.
-
-### Ręczna kolejność: Bitwarden po lewej stronie Chrome
-
-Domyślnie Bitwarden trafia na laptop, a Chrome na monitor zewnętrzny. Jeśli chcesz mieć ich biurka obok siebie, najpierw ręcznie przypisz oba programy do tego samego monitora.
-
-1. W panelu kliknij **Zmień kolejność**, aby otworzyć Mission Control.
-2. Na właściwym monitorze przeciągnij miniaturę całego biurka Bitwardena na lewo od biurka wybranego profilu Chrome.
-3. Zamknij Mission Control i odczekaj około 1–3 sekund. Panel oraz numery skrótów przyjmą kolejność macOS.
-
-Przestawiasz całe biurka, więc Bitwarden i profil Chrome zachowują tożsamość swoich Spaces oraz przypisania. DeskPilot wykrywa zmianę kolejności także bez przełączania na inne biurko. Podczas pracy w Mission Control wstrzymuje automatyczne porządki.
-
-Jeśli sam macOS pozwoli Ci przenieść całe biurko na inny monitor, DeskPilot aktualizuje monitor jego przypisań po potwierdzeniu stabilnego układu, gdy zestaw podłączonych monitorów i biurek pozostaje ten sam. Odłączenie monitora nadal uruchamia oddzielną ochronę i nie jest traktowane jako świadome przeniesienie biurka.
-
-To zapamiętanie bieżącej kolejności, nie stała reguła sąsiedztwa. Po zamknięciu aplikacji i usunięciu jej pustego biurka kolejne uruchomienie może utworzyć nowe biurko w innym miejscu listy na zapamiętanym monitorze.
-
-### Profile Google Chrome
-
-Chrome jest automatycznie rozdzielany po profilach. Pierwsze nowe okno innego profilu dostaje osobne biurko; następne okna tego samego profilu trafiają na jego biurko. W menu `Profile Chrome — osobne biurka` widać rozpoznane profile i ich przypisania. `Ctrl+Shift+numer` oraz menu przypisania działają na profil aktywnego okna Chrome. Inne profile nie są przenoszone razem z nim. Kolejne karty pozostają w swoim oknie; nie są odrywane do nowych okien.
-
-Profil jest identyfikowany przez pełną nazwę dostępną w tytule Accessibility Chrome i lokalną listę nazw profili. Trwałym kluczem jest katalog profilu, np. `Default` lub `Profile 1`, a nie tytuł strony ani sam proces Chrome. Odtwarzana jest nazwa wyświetlana według [reguł Chromium](https://raw.githubusercontent.com/chromium/chromium/main/chrome/browser/profiles/profile_attributes_entry.cc). DeskPilot odczytuje plik JSON Chrome `Local State`, a do rozpoznawania zachowuje wyłącznie sześć pól nazw profili. Nie używa historii, cookies, haseł ani adresów email. Nie wymaga rozszerzenia ani włączania remote debugging.
-
-Zmiana strony nie zmienia tożsamości profilu. Rozpoznanie jest pamiętane przez czas życia okna, także gdy dialog chwilowo zastąpi jego tytuł. Zmiana nazwy profilu nie zmienia zapisanego katalogu profilu. Po zmianie listy profili odczyt nazw odświeża się co około 10 sekund.
-
-**Niejednoznaczne nazwy pozostają nierozpoznane.** Dwa profile o tej samej wyświetlanej nazwie wymagają odróżnienia nazw w Chrome. Nowe okna incognito, gościa lub inne bez jednoznacznej nazwy profilu pozostają na miejscu. Program nie przypisuje ich automatycznie do wspólnego biurka całego Chrome.
-
-Po przeładowaniu Hammerspoon okna na niewidocznych biurkach mogą zostać wykryte dopiero przy odwiedzeniu tych biurek. Odświeżanie listy okien przy przełączeniu Space jest włączone; nierozpoznane okna nadal chronią biurka przed usunięciem.
-
-Stare reguły całego Chrome i reguły Chrome oparte wyłącznie na tytule strony są zachowane w ustawieniach/kopii, ale nie wymuszają wspólnego celu. Nowe reguły zawierają `profileDirectory`. Dla Firefoxa i pozostałych przeglądarek dotychczasowa obsługa aplikacji oraz opcjonalnych wyjątków tytułowych pozostaje bez zmian.
-
-## Migracja
-
-Stare automatyczne przypisania `deskpilot.dockedRules.v1` były oparte na zmiennych numerach i pozostają w kopii ustawień; nie są automatycznie odtwarzane. Jawne reguły aplikacji/profili są zachowane, ale stary numer nie jest używany jako cel. Aktualne położenie okien pozwala utworzyć nowe przypisanie. Wersja 2 zapisuje własne klucze `*.v2`.
-
-Gdy puste biurko przypisanej aplikacji zostanie usunięte, program pamięta jej monitor. Przy następnym uruchomieniu wykorzystuje wolne biurko na wybranym ekranie albo tworzy nowe, uwzględniając dostępne monitory i opisane wyżej role aplikacji. Nie rezerwuje pustej dziury na stałe dla zamkniętej aplikacji.
-
-## macOS Tahoe i ograniczenia
-
-Hammerspoon 1.1.1 potrafi zwrócić powodzenie `moveWindowToSpace` bez faktycznego ruchu na Tahoe. Dołączony `deskpilot-move` korzysta z mechanizmu opisanego w [Hammerspoon PR #3889](https://github.com/Hammerspoon/hammerspoon/pull/3889). Wywoływany jest dopiero po niepotwierdzonym ruchu standardowym API. Nie wymaga zmiany Hammerspoon ani wyłączania SIP. Zobacz [native/README.md](native/README.md).
-
-`hs.spaces` jest eksperymentalnym API opartym na prywatnych mechanizmach Apple. Dodawanie/usuwanie biurek i przełączanie może na chwilę otwierać Mission Control. Aktualizacja macOS może wymagać ponownego sprawdzenia helpera. [Dokumentacja Hammerspoon](https://www.hammerspoon.org/docs/hs.spaces.html)
-
-Natywny fullscreen, Split View, okna przypisane do wszystkich Spaces i pomocnicze okna systemowe nie są automatycznie przenoszone. Finder jest wyłączony z automatycznego przypisywania, ale jego rzeczywiste okna chronią zajęte biurka przed usunięciem. Odłączenie monitora fizycznie wymusza reakcję macOS; DeskPilot po stabilizacji dopasowuje zapisaną sesję do dostępnych ekranów, lecz nie może zagwarantować, że sam system nigdy nie przemieści okien.
-
-## Diagnostyka i testy
+Useful diagnostics:
 
 ```sh
-lua tests/policy_test.lua
-lua tests/manager_test.lua
-lua tests/chrome_profiles_test.lua
-lua tests/chrome_adapter_test.lua
-lua tests/panel_model_test.lua
-lua tests/births_test.lua
-lua tests/follow_test.lua
-lua tests/organize_test.lua
-lua tests/previews_test.lua
-lua tests/panel_guard_test.lua
-lua tests/panel_snapshot_test.lua
-lua tests/wire_test.lua
-lua tests/layout_test.lua
-lua tests/display_policy_test.lua
-lua tests/session_test.lua
-lua tests/session_adapter_test.lua
-native/bin/deskpilot-space-move --check
-hs -c 'print(hs.inspect(DeskPilot.status()))'
-hs -c 'print(hs.inspect(DeskPilot.workspaces()))'
-hs -c 'print(hs.inspect(DeskPilot.rules()))'
-hs -c 'print(hs.inspect(DeskPilot.chromeProfiles()))'
-hs -c 'print(hs.inspect(DeskPilot.occupancy()))'
-hs -c 'print(hs.inspect(DeskPilot.panelStatus()))'
-hs -c 'print(hs.inspect(DeskPilot.sessionStatus()))'
+.build/DeskPilot.app/Contents/MacOS/DeskPilotNative --diagnose
+.build/DeskPilot.app/Contents/MacOS/DeskPilotNative --verify-move
 ```
 
-DeskPilot działa tylko wtedy, gdy uruchomiony jest Hammerspoon. Zapisany stan „automat włączony” nie uruchamia zamkniętego Hammerspoon; w takim przypadku otwórz go z Aplikacji lub Spotlight. Start przy logowaniu można sprawdzić w ustawieniach Hammerspoon. Nowa sesja macOS może uruchomić przywracanie układu; ponowny reload w tej samej sesji nie rozstawia ponownie już obsłużonych aplikacji.
+`--diagnose` only reads system capabilities. `--verify-move` creates its own temporary window, moves it between two existing regular desktops, checks the destination and return, then closes it. It requires window management access. A tool-launched diagnostic process can have a different permission context from the normally opened app; verify access in the actual app as well.
 
-Poprawka z 22.09.2026 odróżnia zmianę rozmiaru Docka od zmiany monitorów. Dodanie ikony uruchamianego programu nie zeruje już wykrywania nowych okien. Stabilizacja układu jest potrzebna po zmianie zestawu monitorów lub ich pełnej geometrii. Poprawka zachowuje też informację o nowym oknie, kiedy macOS chwilowo nie podaje jego biurka. Przydział czeka na poprawny odczyt lokalizacji; pauza i ręczne przeniesienie nadal mają pierwszeństwo.
+`--data-dir /path` isolates settings for development. `--background` starts with the panel hidden, and `--smoke` exits after three seconds.
 
-Odczyt wewnętrzny `--windows-stream` w helperze 1.3.2 przenosi JSON jako ASCII base64 z dokładną długością odpowiedzi. DeskPilot potwierdza odebranie całej odpowiedzi; dopiero wtedy helper kończy proces, a po potwierdzeniu powodzenia dekodowany jest JSON. Pozwala to uniknąć wyścigu odczytów Hammerspoon, który potrafił zwrócić fragmenty w innej kolejności. Kompletność danych wynika z długości wiadomości, a nie z umownego opóźnienia. Przerwana lub błędna odpowiedź nie odświeża zajętości biurek; po utracie aktualnych danych ruchy zależne od zajętości i sprzątanie czekają na poprawny odczyt. `DeskPilot.status()` pokazuje `metadataReads` i ewentualny `metadataError`.
-
-`--check` nie przenosi okien; potwierdza tylko dostępność symboli. `--windows` od wersji 1.2.0 zwraca metadane i prostokąty okien, także spoza aktywnego biurka, bez tytułów i obrazów. Wersja 1.3.2 dodaje rzeczywiste identyfikatory ekranów i flagę `builtIn` do weryfikacji monitorów przed przywracaniem sesji. Diagnostyka zajętości ma znaczenie: `false` = potwierdzona pustka, `true` = okno lub nierozpoznany obiekt, brak wartości = brak wiarygodnego odczytu.
-
-Zakres testów oraz dotychczasowa weryfikacja na macOS 26.6.2, Hammerspoon 1.1.1, dwóch zewnętrznych Dellach i ekranie laptopa (próby rzeczywiste 21–23.09.2026):
-
-- **487 testów w 16 zestawach przechodzi poprawnie.** Regresje obejmują nowe okna, profile Chrome, ręczną kolejność, podglądy, protokół danych, sprzątanie oraz rozróżnienie pustki od niepełnego odczytu.
-- Pamięć sesji ma osobne testy walidacji zapisu, doboru monitorów, listy aktywnych aplikacji, zachowania geometrii, jednokrotnego przywracania i pierwszeństwa ręcznych zmian. Testy adaptera używają kontrolowanych zastępników API; nie zastępują próby restartu na rzeczywistych monitorach.
-- Kompilacja Objective-C z `-Wall -Wextra -Werror` i sprawdzenie składni Lua przeszły.
-- Tymczasowe okno TextEdit rzeczywiście przeniesiono między Spaces/monitorami i z powrotem; sprawdzono docelowe ID zarówno w helperze, jak i w Hammerspoon.
-- Przeniesienie przez manager potwierdziło się i zapisało UUID celu.
-- Testowe biurko utworzono, potwierdzono jego pustkę, usunięto i potwierdzono zniknięcie.
-- Dokumenty testowe zamknięto bez zapisu, testowe przypisanie usunięto.
-- Po włączeniu automatyki kolejka zakończyła się bez błędów, żadne dwie automatyczne reguły różnych aplikacji nie wskazywały tego samego biurka.
-- Próba pamięci sesji 23.09.2026 użyła własnej pustej aplikacji Cocoa i osobnego zapisu testowego: autostart raz, przeniesienie na ekran wbudowany, proporcjonalna ramka i brak ponowień po odtworzeniu koordynatora w tej samej sesji. Tworzenie nowego biurka sprawdzono osobno w tym samym przebiegu testów. Fokus i aktywne biurka na trzech ekranach pozostały identyczne.
-- Fizyczne odłączanie monitorów, restart systemu i wszystkie możliwe aplikacje nie były testowane.
-
-## Cofnięcie instalacji
-
-Wstrzymaj DeskPilot. Przywróć pliki Lua, `deskpilot_panel.html` i helper `deskpilot-move` z jednej wybranej kopii do `~/.hammerspoon`, następnie wybierz Reload Config. Nie mieszaj plików z różnych wersji. Stary DeskPilot korzysta z zachowanych ustawień v1. Przed importem całego `settings.plist` zamknij Hammerspoon; import całej kopii cofa także inne jego ustawienia.
-
-Przywrócenie kodu nie odtwarza usuniętych pustych Spaces ani wcześniejszego układu okien. Zajęte biurka nie są usuwane przez sprzątanie.
+Third-party attribution and license notices are retained in [ThirdPartyNotices](ThirdPartyNotices).

@@ -1,5 +1,5 @@
-// Native Space support adapted from DeskPilot and Hammerspoon PR #3889.
-// See LICENSE-Hammerspoon.txt. Private APIs are probed, never assumed.
+// Native Space integration. See ThirdPartyNotices/Hammerspoon.txt for attribution.
+// Private APIs are probed before use.
 #import "NativeSupport.h"
 #import <dlfcn.h>
 #import <mach-o/dyld.h>
@@ -91,18 +91,18 @@ BOOL DPCanMove(void) {
 }
 NSString *DPBeginMove(uint32_t window, uint64_t target) {
     @try {
-        if (!AXIsProcessTrusted()) return @"Brak uprawnienia Dostępność.";
-        if (!DPCanMove()) return @"Ta wersja macOS nie udostępnia obsługi przenoszenia.";
+        if (!AXIsProcessTrusted()) return @"Window management access is required.";
+        if (!DPCanMove()) return @"Window movement is unavailable on this macOS version.";
         int (*type)(int,uint64_t) = dlsym(library(), "SLSSpaceGetType");
         NSArray *before = DPWindowSpaces(window);
         if (!type || before.count != 1 || type(connection(),[before.firstObject unsignedLongLongValue]) != 0 || type(connection(), target) != 0)
-            return @"Przenosić można zwykłe okna na zwykłych biurkach.";
+            return @"Only standard windows on regular desktops can be moved.";
         Class cls = NSClassFromString(@"SLSBridgedMoveWindowsToManagedSpaceOperation");
         retainedOperation = [[cls alloc] initWithWindows:@[@(window)] spaceID:target];
-        if (!retainedOperation) return @"Nie udało się przygotować przeniesienia.";
+        if (!retainedOperation) return @"Unable to prepare the window move.";
         PerformAsyncOperation perform = findLocalSymbol(kSkyLight,kAsyncSymbol);
         perform((__bridge void *)retainedOperation);
         return nil;
-    } @catch (NSException *e) { return e.reason ?: @"Błąd macOS."; }
+    } @catch (NSException *e) { return e.reason ?: @"macOS error."; }
 }
 void DPEndMove(void) { retainedOperation = nil; }

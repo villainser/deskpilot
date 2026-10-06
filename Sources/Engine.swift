@@ -9,7 +9,7 @@ import ServiceManagement
     @Published var desktops: [Desktop] = []
     @Published var windows: [WindowInfo] = []
     @Published var chromeProfiles: [ChromeProfile] = []
-    @Published var status = "Gotowy do konfiguracji"
+    @Published var status = "Ready to set up"
     @Published var trusted = false
     @Published var busy = false
     @Published var locked = false
@@ -19,16 +19,20 @@ import ServiceManagement
     @Published var activeProfileID: String?
     @Published var lastError: String?
     var onChange: (() -> Void)?
-    let system = SystemAccess()
+    let system: SystemAccessProtocol
     let dataURL: URL
+    private let chromeProfilesURL: URL
     var rememberedWindow: UInt32?
     private var pending: DispatchWorkItem?
+    private var scheduledFor: Date?
     private var dirty = Set<Int32>()
     private var fullRead = false
-    private var births: [UInt32: Date] = [:]
+    private var routingInbox = RoutingInbox()
+    private var knownServerWindows: Set<WindowIdentity>?
     private var launching: [Int32: Date] = [:]
     private var previous: [UInt32: (Int32, UInt64)] = [:]
     private var chromeBindings: [String: ChromeProfile] = [:]
+    private var manualChromeBindings: [String: String] = [:]
     private var chromeModified: Date?
     private var guardUntil = Date.distantPast
     private var generation = 0
@@ -42,17 +46,19 @@ import ServiceManagement
     private var operationGeneration: Int?
     private var lastOwnMovement = Date.distantPast
 
-    init(dataURL: URL? = nil) {
+    init(dataURL: URL? = nil, system: SystemAccessProtocol = SystemAccess(), chromeProfilesURL: URL? = nil) {
+        self.system = system
+        self.chromeProfilesURL = chromeProfilesURL ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Google/Chrome/Local State")
         self.dataURL = dataURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("DeskPilot Native", isDirectory: true).appendingPathComponent("state.json")
         if let data = try? Data(contentsOf: self.dataURL) {
             do {
                 let loaded = try JSONDecoder().decode(AppState.self, from: data)
-                guard loaded.schema == 1 else { throw AppError.message("Nieobsługiwana wersja zapisu ustawień.") }
+                guard loaded.schema == 1 else { throw AppError.message("Unsupported settings version.") }
                 state = loaded
             } catch {
                 operational = false
-                lastError = "Nie udało się wczytać ustawień. Oryginalny plik został zachowany: \(error.localizedDescription)"
+                lastError = "Unable to load settings. The original file was preserved: \(error.localizedDescription)"
             }
         }
     }
@@ -63,17 +69,18 @@ import ServiceManagement
         }
         system.start()
         refresh(full: true)
+        if state.enabled { enqueueOpenWindows() }
         guardUntil = Date().addingTimeInterval(3)
         if state.enabled && state.automaticProfiles { handleTopology() }
         else { schedule(delay: 3.1) }
-        status = trusted ? (state.enabled ? "Automatyka aktywna" : "Automatyka wstrzymana") : "Nadaj uprawnienie Dostępność"
+        status = trusted ? (state.enabled ? "Automation enabled" : "Automation paused") : "Grant window management access"
     }
 
     func event(_ name: String, pid: Int32?, windowID: UInt32?) {
         events += 1
         if name == "com.apple.screenIsLocked" || name == NSWorkspace.sessionDidResignActiveNotification.rawValue {
-            locked = true; generation += 1; births.removeAll(); launching.removeAll(); pending?.cancel()
-            topologyTask?.cancel(); status = "Mac zablokowany"; return
+            locked = true; generation += 1; routingInbox.clear(); launching.removeAll(); pending?.cancel()
+            topologyTask?.cancel(); status = "Mac is locked"; return
         }
         if name == "com.apple.screenIsUnlocked" || name == NSWorkspace.sessionDidBecomeActiveNotification.rawValue || name == NSWorkspace.didWakeNotification.rawValue {
             locked = false; handleTopology(); return
@@ -86,12 +93,17 @@ import ServiceManagement
             handleTopology(); return
         }
         if state.enabled && !restoring {
-            if name == kAXWindowCreatedNotification, let windowID { births[windowID] = Date() }
+            if name == kAXWindowCreatedNotification, let pid {
+                if let windowID { routingInbox.enqueue(WindowIdentity(pid: pid, windowID: windowID)) }
+                // The native window ID may not exist yet when AX announces it.
+                launching[pid] = Date()
+            }
             if name == NSWorkspace.didLaunchApplicationNotification.rawValue, let pid { launching[pid] = Date() }
         }
         if name == kAXUIElementDestroyedNotification, let pid, let windowID {
             chromeBindings["\(pid):\(windowID)"] = nil
-            births[windowID] = nil
+            manualChromeBindings["\(pid):\(windowID)"] = nil
+            routingInbox.remove(WindowIdentity(pid: pid, windowID: windowID))
         }
         if let pid { dirty.insert(pid) }
         if name == NSWorkspace.activeSpaceDidChangeNotification.rawValue { fullRead = true }
@@ -101,10 +113,15 @@ import ServiceManagement
 
     func schedule(delay: TimeInterval = 0.35, full: Bool = false) {
         fullRead = fullRead || full
+        let requested = Date().addingTimeInterval(delay)
+        // A stream of window events must not postpone an already scheduled read.
+        if let scheduledFor, scheduledFor <= requested, pending?.isCancelled == false { return }
         pending?.cancel()
+        scheduledFor = requested
         let job = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.pending = nil
+            self.scheduledFor = nil
             let full = self.fullRead; self.fullRead = false
             self.refresh(full: full)
         }
@@ -120,7 +137,10 @@ import ServiceManagement
         displays = system.screens()
         displayGeometry = geometrySignature(displays)
         guard let spaces = system.spaces(displays: displays) else {
-            lastError = "Nie udało się odczytać biurek. Automatyka nie wykona ruchów."
+            lastError = "Unable to read desktops. No windows will be moved."
+            if state.enabled && (routingInbox.needsRetry() || launching.values.contains(where: { Date().timeIntervalSince($0) < 8 })) {
+                schedule(delay: 1, full: true)
+            }
             return
         }
         desktops = spaces
@@ -132,18 +152,31 @@ import ServiceManagement
         oldDisplaySignature = currentSignature
         let changed = dirty; dirty.removeAll()
         let raw = system.readWindows(dirty: full || !hasBaseline ? nil : changed)
+        if let serverWindows = system.windowIdentities() {
+            if let before = knownServerWindows, state.enabled && !restoring {
+                for identity in serverWindows.subtracting(before) { routingInbox.enqueue(identity) }
+            }
+            knownServerWindows = serverWindows
+            routingInbox.reconcile(live: serverWindows)
+        }
         loadChromeProfiles()
         windows = raw.map { item in
             var item = item
             if item.appID == "com.google.Chrome" {
                 let key = "\(item.pid):\(item.id)"
-                let profile = ChromeResolver.resolve(title: item.title, profiles: chromeProfiles) ?? chromeBindings[key]
+                let manual = manualChromeBindings[key].flatMap { id in chromeProfiles.first { $0.id == id } }
+                let cached = chromeBindings[key].flatMap { old in chromeProfiles.first { $0.id == old.id } }
+                let titles = [item.title] + item.accessibilityTitles
+                let explicitIdentity = titles.contains(where: ChromeResolver.hasIdentitySuffix)
+                let profile = manual ?? ChromeResolver.resolve(titles: titles, profiles: chromeProfiles) ?? (explicitIdentity ? nil : cached)
+                if explicitIdentity && profile == nil { chromeBindings[key] = nil }
                 if let profile { chromeBindings[key] = profile; item.group = item.appID + "::" + profile.id; item.profileName = profile.name; item.profileDirectory = profile.id }
             } else { item.group = item.appID }
             return item
         }
         let live = Set(windows.filter { $0.appID == "com.google.Chrome" }.map { "\($0.pid):\($0.id)" })
         chromeBindings = chromeBindings.filter { live.contains($0.key) }
+        manualChromeBindings = manualChromeBindings.filter { live.contains($0.key) }
         refreshes += 1; lastReadMilliseconds = system.lastReadMilliseconds
         var manual: [(WindowInfo, Desktop)] = []
         if hasBaseline && state.enabled && !busy && !restoring && Date() > guardUntil && Date().timeIntervalSince(lastOwnMovement) > 2 {
@@ -156,29 +189,30 @@ import ServiceManagement
             }
         }
         previous = Dictionary(uniqueKeysWithValues: windows.compactMap { w in w.spaceIDs.count == 1 ? (w.id, (w.pid, w.spaceIDs[0])) : nil })
-        let new = hasBaseline ? windows.filter { births[$0.id] != nil || launching[$0.pid] != nil } : []
+        let new = hasBaseline ? routingInbox.candidates(in: windows) : []
         hasBaseline = true
         onChange?()
-        guard trusted && operational && state.enabled && !busy && !restoring && Date() > guardUntil else { return }
-        guard system.missionControlRoot() == nil else { return }
-        // Retry only newly created windows with incomplete AX/profile data,
-        // for a bounded eight-second period. There is no steady-state poll.
-        let deadline = Date().addingTimeInterval(-8)
-        births = births.filter { $0.value > deadline }
-        launching = launching.filter { $0.value > deadline }
-        for window in new where window.group != nil { births[window.id] = nil }
-        for pid in Array(launching.keys) {
-            let candidates = new.filter { $0.pid == pid }
-            if !candidates.isEmpty && candidates.allSatisfy({ $0.group != nil }) { launching[pid] = nil }
+        guard trusted && operational && state.enabled && !busy && !restoring else { return }
+        guard Date() > guardUntil else {
+            if !routingInbox.isEmpty || !launching.isEmpty { schedule(delay: max(0.1, guardUntil.timeIntervalSinceNow + 0.1), full: true) }
+            return
         }
-        if !births.isEmpty || !launching.isEmpty { schedule(delay: 1, full: true) }
+        guard system.missionControlRoot() == nil else {
+            if routingInbox.needsRetry() { schedule(delay: 0.5, full: true) }
+            return
+        }
+        // Poll only during a bounded startup interval. Unresolved live windows
+        // stay queued and can complete after a later title/profile event.
+        let deadline = Date().addingTimeInterval(-8)
+        launching = launching.filter { $0.value > deadline }
+        if routingInbox.needsRetry() || !launching.isEmpty { schedule(delay: 1, full: true) }
         if !manual.isEmpty {
             Task { await runOperation {
                 var handled = Set<String>()
                 for (window, destination) in manual {
                     guard let key = window.group, handled.insert(key).inserted else { continue }
-                    self.record(window, on: destination)
                     try await self.moveGroup(key, to: destination)
+                    self.record(window, on: destination)
                 }
             } }
         } else if !new.isEmpty {
@@ -191,15 +225,11 @@ import ServiceManagement
     }
 
     private func checkpoint() throws {
-        guard !locked, operationGeneration == generation else { throw AppError.message("Operacja przerwana po zmianie stanu systemu.") }
+        guard !locked, operationGeneration == generation else { throw AppError.message("The operation was cancelled after a system state change.") }
     }
 
     func name(_ desktop: Desktop) -> String {
-        if let label = state.names[desktop.id], !label.isEmpty { return label }
-        let labels = Set(windows.filter { $0.spaceIDs.contains(desktop.systemID) }.map { $0.profileName.map { "Chrome · \($0)" } ?? $0.appName })
-        if !labels.isEmpty { return labels.sorted().prefix(2).joined(separator: " + ") }
-        let assigned = state.assignments.filter { $0.desktopID == desktop.id }.map(\.label)
-        return assigned.isEmpty ? "Biurko \(desktop.ordinal + 1)" : Array(Set(assigned)).sorted().prefix(2).joined(separator: " + ")
+        DesktopNaming.name(for: desktop, customNames: state.names, assignments: state.assignments, windows: windows)
     }
 
     func save() {
@@ -220,32 +250,33 @@ import ServiceManagement
         trusted = system.trusted
         writeRuntimeStatus()
         if !state.enabled && !trusted { requestAccessibility(); return }
-        state.enabled.toggle(); generation += 1; births.removeAll(); launching.removeAll()
+        state.enabled.toggle(); generation += 1; routingInbox.clear(); launching.removeAll()
         if !state.enabled { topologyTask?.cancel() }
-        refresh(full: true)
         guardUntil = Date().addingTimeInterval(1)
+        refresh(full: true)
+        if state.enabled { enqueueOpenWindows() }
         schedule(delay: 1.1, full: true)
-        status = state.enabled ? "Automatyka aktywna · nowe okna" : "Automatyka wstrzymana"
+        status = state.enabled ? "Automation enabled" : "Automation paused"
         save()
     }
 
     func requestAccessibility() {
         checkAccessibility()
-        if trusted { status = "Uprawnienie do sterowania oknami jest aktywne"; return }
+        if trusted { status = "Window management access is granted"; return }
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
 
     var permissionName: String {
-        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 ? "Sterowanie urządzeniami i dostęp do danych" : "Dostępność"
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27 ? "Device Control and Data Access" : "Accessibility"
     }
 
     func checkAccessibility() {
         refresh(full: true)
         writeRuntimeStatus()
         if !busy {
-            status = trusted ? (state.enabled ? "Automatyka aktywna" : "Dostęp przyznany · automatyka wstrzymana") : "Brak dostępu dla tej uruchomionej kopii DeskPilot"
+            status = trusted ? (state.enabled ? "Automation enabled" : "Access granted · automation paused") : "Access is not granted to this copy of DeskPilot"
         }
     }
 
@@ -261,7 +292,7 @@ import ServiceManagement
     }
 
     func loadChromeProfiles() {
-        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Google/Chrome/Local State")
+        let url = chromeProfilesURL
         let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
         guard chromeModified == nil || modified != chromeModified else { return }
         guard let data = try? Data(contentsOf: url),
@@ -272,9 +303,16 @@ import ServiceManagement
 
     func setChromeProfile(windowID: UInt32, profile: ChromeProfile) {
         guard let w = windows.first(where: { $0.id == windowID && $0.appID == "com.google.Chrome" }) else { return }
-        chromeBindings["\(w.pid):\(windowID)"] = profile
+        manualChromeBindings["\(w.pid):\(windowID)"] = profile.id
+        if state.enabled { routingInbox.enqueue(w.identity) }
         refresh(full: true)
-        status = "Rozpoznano profil \(profile.name) dla tego okna"
+        status = "Profile set to \(profile.name) for this window"
+    }
+
+    private func enqueueOpenWindows() {
+        for window in windows where window.spaceIDs.count == 1 && desktops.contains(where: { $0.systemID == window.spaceIDs[0] && !$0.fullScreen }) {
+            routingInbox.enqueue(window.identity)
+        }
     }
 
     func record(_ window: WindowInfo, on desktop: Desktop, preserveHome: Bool = false) {
@@ -289,57 +327,67 @@ import ServiceManagement
 
     func target(for window: WindowInfo) async throws -> Desktop {
         try checkpoint()
-        guard let key = window.group else { throw AppError.message("Wskaż profil Chrome dla tego okna.") }
+        guard let key = window.group else { throw AppError.message("Choose a Chrome profile for this window.") }
         if let id = temporaryTargets[key], let desktop = desktops.first(where: { $0.id == id && !$0.fullScreen }) { return desktop }
         let rule = state.assignments.first { $0.id == key }
         if let rule, let desktop = Policy.target(for: rule, desktops: desktops, displays: displays) { return desktop }
         let current = desktops.first { window.spaceIDs.contains($0.systemID) }
         guard let displayID = Policy.preferredDisplay(for: rule, current: current?.displayID, displays: displays),
-              let display = displays.first(where: { $0.id == displayID }), let occupancy = system.occupancy() else { throw AppError.message("Brak wiarygodnego odczytu monitora lub okien.") }
-        let groupWindows = Set(windows.filter { $0.group == key }.map(\.id))
-        let reserved = Set(state.assignments.filter { $0.id != key }.map(\.desktopID))
-        if let available = desktops.first(where: {
-            !$0.fullScreen && $0.displayID == displayID && !reserved.contains($0.id) && (occupancy[$0.systemID] ?? []).subtracting(groupWindows).isEmpty
-        }) { return available }
+              let display = displays.first(where: { $0.id == displayID }) else { throw AppError.message("Unable to identify the destination display.") }
         let before = Set(desktops.map(\.id))
-        status = "Tworzę biurko dla \(window.profileName ?? window.appName)…"
+        status = "Creating a desktop for \(window.profileName ?? window.appName)…"
         try checkpoint()
-        try await system.missionControl(display: display, create: true)
+        try await system.missionControl(display: display, select: nil, create: true)
         try checkpoint()
         for _ in 0..<15 {
             try await Task.sleep(nanoseconds: 150_000_000)
             if let current = system.spaces(displays: displays) {
                 desktops = current
-                if let created = current.first(where: { $0.displayID == displayID && !$0.fullScreen && !before.contains($0.id) }) { return created }
+                if let created = current.first(where: { $0.displayID == displayID && !$0.fullScreen && !before.contains($0.id) }) {
+                    temporaryTargets[key] = created.id
+                    return created
+                }
             }
         }
-        throw AppError.message("macOS nie potwierdził utworzenia biurka.")
+        throw AppError.message("macOS did not confirm desktop creation.")
     }
 
     func runOperation(_ operation: () async throws -> Void) async {
         guard !busy && !locked && trusted && operational else {
-            if !trusted { status = "Nadaj uprawnienie Dostępność" }
+            if !trusted { status = "Grant window management access" }
             return
         }
         busy = true; lastError = nil; operationGeneration = generation
         defer { operationGeneration = nil; busy = false; lastOwnMovement = Date(); schedule(full: true) }
-        do { try await operation(); status = "Gotowe" }
+        do { try await operation(); status = "Done" }
         catch { fail(error) }
     }
 
-    private func routeNew(_ incoming: [WindowInfo]) async {
+    func routeNew(_ incoming: [WindowInfo]) async {
         await runOperation {
-            let token = self.generation
-            var handled = Set<String>()
-            for window in incoming {
-                guard self.state.enabled, token == self.generation else { return }
-                guard let key = window.group, handled.insert(key).inserted, window.spaceIDs.count == 1,
-                      self.desktops.contains(where: { $0.systemID == window.spaceIDs[0] && !$0.fullScreen }) else { continue }
-                let destination = try await self.target(for: window)
-                try await self.moveGroup(key, to: destination)
-                let rule = self.state.assignments.first { $0.id == key }
-                let missingHome = rule.map { r in !self.displays.contains { $0.id == r.displayID } } ?? false
-                self.record(window, on: destination, preserveHome: missingHome)
+            do {
+                let token = self.generation
+                var handled = Set<String>()
+                for window in incoming {
+                    guard self.state.enabled, token == self.generation else { return }
+                    guard let key = window.group, handled.insert(key).inserted, window.spaceIDs.count == 1,
+                          self.desktops.contains(where: { $0.systemID == window.spaceIDs[0] && !$0.fullScreen }) else { continue }
+                    let destination = try await self.target(for: window)
+                    try await self.moveGroup(key, to: destination)
+                    let rule = self.state.assignments.first { $0.id == key }
+                    let missingHome = rule.map { r in !self.displays.contains { $0.id == r.displayID } } ?? false
+                    self.record(window, on: destination, preserveHome: missingHome)
+                    // A window may arrive during the awaited move. Complete only
+                    // windows whose destination is confirmed, leaving late arrivals queued.
+                    let confirmed = self.windows.filter {
+                        $0.group == key && self.system.windowSpaces($0.id) == [destination.systemID]
+                    }
+                    self.routingInbox.complete(confirmed.map(\.identity))
+                    self.refresh(full: true)
+                }
+            } catch {
+                self.state.enabled = false; self.save()
+                throw error
             }
         }
     }
@@ -348,28 +396,28 @@ import ServiceManagement
         try checkpoint()
         let token = operationGeneration
         for window in windows.filter({ $0.group == key }) {
-            guard !locked && token == generation else { throw AppError.message("Przerwano po zmianie stanu systemu.") }
+            guard !locked && token == generation else { throw AppError.message("Cancelled after a system state change.") }
             guard window.spaceIDs.count == 1,
                   desktops.contains(where: { $0.systemID == window.spaceIDs[0] && !$0.fullScreen }) else { continue }
             if window.spaceIDs[0] == desktop.systemID { continue }
-            if let error = DPBeginMove(window.id, desktop.systemID) { throw AppError.message(error) }
+            if let error = system.beginMove(window.id, to: desktop.systemID) { throw AppError.message(error) }
+            defer { system.endMove() }
             var confirmed = false
             for _ in 0..<24 {
                 try await Task.sleep(nanoseconds: 125_000_000)
-                if let actual = DPWindowSpaces(window.id) as? [NSNumber], actual.count == 1, actual[0].uint64Value == desktop.systemID { confirmed = true; break }
+                if system.windowSpaces(window.id) == [desktop.systemID] { confirmed = true; break }
                 if locked || token != generation { break }
             }
-            DPEndMove()
             guard confirmed else {
                 state.enabled = false; save()
-                throw AppError.message("macOS nie potwierdził ruchu okna. Automatyka została wstrzymana.")
+                throw AppError.message("macOS did not confirm the window move. Automation has been paused.")
             }
             previous[window.id] = (window.pid, desktop.systemID)
         }
     }
 
     func assign(_ windowID: UInt32, to desktop: Desktop) {
-        guard let w = windows.first(where: { $0.id == windowID }), let key = w.group else { status = "Najpierw rozpoznaj profil Chrome"; return }
+        guard let w = windows.first(where: { $0.id == windowID }), let key = w.group else { status = "Choose a Chrome profile first"; return }
         Task { await runOperation { try await self.moveGroup(key, to: desktop); self.record(w, on: desktop) } }
     }
 
@@ -392,12 +440,12 @@ import ServiceManagement
     func switchTo(_ desktop: Desktop) {
         guard let display = displays.first(where: { $0.id == desktop.displayID }) else { return }
         Task { await runOperation {
-            try await self.system.missionControl(display: display, select: desktop)
+            try await self.system.missionControl(display: display, select: desktop, create: false)
             for _ in 0..<15 {
                 try await Task.sleep(nanoseconds: 100_000_000)
                 if self.system.spaces(displays: self.displays)?.contains(where: { $0.id == desktop.id && $0.active }) == true { return }
             }
-            throw AppError.message("macOS nie potwierdził przejścia na biurko.")
+            throw AppError.message("macOS did not confirm the desktop switch.")
         } }
     }
 
@@ -413,8 +461,8 @@ import ServiceManagement
         let area = display.visibleFrame.insetBy(dx: 8, dy: 8)
         let half = (area.width - 8) / 2
         let frame = side == "fill" ? area : CGRect(x: side == "right" ? area.minX + half + 8 : area.minX, y: area.minY, width: half, height: area.height)
-        if system.setFrame(frame, windowID: windowID) { status = "Ułożono okno"; schedule(full: true) }
-        else { status = "Aplikacja nie pozwoliła zmienić rozmiaru okna" }
+        if system.setFrame(frame, windowID: windowID) { status = "Window arranged"; schedule(full: true) }
+        else { status = "The app did not allow this window to be resized" }
     }
 
     func saveProfile(name: String, fallback: Bool) {
@@ -433,11 +481,11 @@ import ServiceManagement
             }
             frames.append(SavedWindow(group: key, titleHash: Self.hash(w.title), frame: RelativeFrame(w.frame, in: display.visibleFrame)))
         }
-        let profile = LayoutProfile(name: name.isEmpty ? "Układ \(state.profiles.count + 1)" : name,
+        let profile = LayoutProfile(name: name.isEmpty ? "Layout \(state.profiles.count + 1)" : name,
                                     displayIDs: displays.map(\.id), assignments: rules, frames: frames, names: state.names)
         state.profiles.append(profile)
         if fallback { state.defaultProfileID = profile.id }
-        state.assignments = rules; activeProfileID = profile.id; save(); status = "Zapisano profil „\(profile.name)”"
+        state.assignments = rules; activeProfileID = profile.id; save(); status = "Saved layout “\(profile.name)”"
     }
 
     func restore(_ profile: LayoutProfile) {
@@ -464,7 +512,7 @@ import ServiceManagement
         var remap: [String: Desktop] = [:]
         var missing = 0
         for rule in profile.assignments {
-            guard !locked && token == generation else { throw AppError.message("Przywracanie przerwano po zmianie systemu.") }
+            guard !locked && token == generation else { throw AppError.message("Layout restoration was cancelled after a system change.") }
             guard let window = windows.first(where: { $0.group == rule.id }) else { missing += 1; continue }
             let target: Desktop
             if let shared = remap[rule.desktopID] { target = shared }
@@ -484,23 +532,25 @@ import ServiceManagement
             refresh(full: true)
         }
         activeProfileID = profile.id; save()
-        if missing > 0 { lastError = "Przywrócono dostępne okna. \(missing) zapisanych aplikacji lub profili nie ma otwartych okien." }
+        if missing > 0 { lastError = "Available windows restored. \(missing) saved apps or profiles have no open windows." }
     }
 
     private func handleTopology() {
         generation += 1; guardUntil = Date().addingTimeInterval(5)
-        births.removeAll(); launching.removeAll(); previous.removeAll(); temporaryTargets.removeAll()
-        topologyTask?.cancel(); status = "Czekam na ustabilizowanie monitorów…"
+        routingInbox.clear(); launching.removeAll(); previous.removeAll(); temporaryTargets.removeAll()
+        topologyTask?.cancel(); status = "Waiting for displays to settle…"
         topologyTask = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
             guard let self, !self.locked else { return }
             self.oldDisplaySignature = ""
             self.refresh(full: true)
-            guard self.state.enabled, self.state.automaticProfiles else { self.status = "Monitory odczytane"; return }
+            guard self.state.enabled, self.state.automaticProfiles else { self.status = "Displays updated"; return }
             if let profile = Policy.profile(for: self.displays.map(\.id), state: self.state) {
                 await self.runOperation { try await self.restoreProfile(profile) }
             } else {
-                self.status = "Brak zapisanego profilu dla tego zestawu monitorów"
+                self.enqueueOpenWindows()
+                self.schedule(full: true)
+                self.status = "Assigning apps to desktops"
             }
         }
     }

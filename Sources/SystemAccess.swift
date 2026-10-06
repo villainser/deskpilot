@@ -8,7 +8,26 @@ func ax(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
 }
 func axChildren(_ element: AXUIElement) -> [AXUIElement] { ax(element, kAXChildrenAttribute) as? [AXUIElement] ?? [] }
 
-final class SystemAccess {
+protocol SystemAccessProtocol: AnyObject {
+    var onEvent: ((String, Int32?, UInt32?) -> Void)? { get set }
+    var trusted: Bool { get }
+    var canMove: Bool { get }
+    var lastReadMilliseconds: Double { get }
+    func start()
+    func screens() -> [Display]
+    func spaces(displays: [Display]) -> [Desktop]?
+    func readWindows(dirty: Set<Int32>?) -> [WindowInfo]
+    func windowIdentities() -> Set<WindowIdentity>?
+    func focusedWindowID() -> UInt32?
+    func missionControlRoot() -> AXUIElement?
+    @MainActor func missionControl(display: Display, select: Desktop?, create: Bool) async throws
+    func setFrame(_ rect: CGRect, windowID: UInt32) -> Bool
+    func beginMove(_ windowID: UInt32, to spaceID: UInt64) -> String?
+    func windowSpaces(_ windowID: UInt32) -> [UInt64]?
+    func endMove()
+}
+
+final class SystemAccess: SystemAccessProtocol {
     var onEvent: ((String, Int32?, UInt32?) -> Void)?
     private var observers: [Int32: AXObserver] = [:]
     private var tokens: [NSObjectProtocol] = []
@@ -20,6 +39,9 @@ final class SystemAccess {
 
     var trusted: Bool { AXIsProcessTrusted() }
     var canMove: Bool { DPCanMove() }
+    func beginMove(_ windowID: UInt32, to spaceID: UInt64) -> String? { DPBeginMove(windowID, spaceID) }
+    func windowSpaces(_ windowID: UInt32) -> [UInt64]? { (DPWindowSpaces(windowID) as? [NSNumber])?.map(\.uint64Value) }
+    func endMove() { DPEndMove() }
 
     func start() {
         let nc = NSWorkspace.shared.notificationCenter
@@ -124,10 +146,12 @@ final class SystemAccess {
                 if let value = ax(window, kAXPositionAttribute), CFGetTypeID(value) == AXValueGetTypeID() { AXValueGetValue(value as! AXValue, .cgPoint, &point) }
                 if let value = ax(window, kAXSizeAttribute), CFGetTypeID(value) == AXValueGetTypeID() { AXValueGetValue(value as! AXValue, .cgSize, &size) }
                 let spaces = (DPWindowSpaces(id) as? [NSNumber] ?? []).map(\.uint64Value)
-                records.append(WindowInfo(id: id, pid: pid, appID: app.bundleIdentifier ?? app.bundleURL?.path ?? "pid:\(pid)",
-                                          appName: app.localizedName ?? "Aplikacja", title: ax(window, kAXTitleAttribute) as? String ?? "",
+                var record = WindowInfo(id: id, pid: pid, appID: app.bundleIdentifier ?? app.bundleURL?.path ?? "pid:\(pid)",
+                                          appName: app.localizedName ?? "Application", title: ax(window, kAXTitleAttribute) as? String ?? "",
                                           frame: CGRect(origin: point, size: size), spaceIDs: spaces,
-                                          minimized: ax(window, kAXMinimizedAttribute) as? Bool ?? false))
+                                          minimized: ax(window, kAXMinimizedAttribute) as? Bool ?? false)
+                if record.appID == "com.google.Chrome" { record.accessibilityTitles = chromeWindowTitles(window) }
+                records.append(record)
                 let identity = "\(pid):\(id)"
                 if !observedWindows.contains(identity), let observer = observers[pid] {
                     for name in [kAXMovedNotification, kAXResizedNotification, kAXTitleChangedNotification, kAXUIElementDestroyedNotification, kAXWindowMiniaturizedNotification, kAXWindowDeminiaturizedNotification] {
@@ -142,8 +166,7 @@ final class SystemAccess {
             for old in cache[pid] ?? [] where !nowIDs.contains(old.id) {
                 if let spaces = DPWindowSpaces(old.id) as? [NSNumber], !spaces.isEmpty {
                     var kept = old
-                    kept = WindowInfo(id: old.id, pid: old.pid, appID: old.appID, appName: old.appName, title: old.title, frame: old.frame,
-                                      spaceIDs: spaces.map(\.uint64Value), minimized: old.minimized)
+                    kept.spaceIDs = spaces.map(\.uint64Value)
                     records.append(kept)
                 } else { elements[old.id] = nil; observedWindows.remove("\(pid):\(old.id)") }
             }
@@ -151,6 +174,26 @@ final class SystemAccess {
         }
         lastReadMilliseconds = (ProcessInfo.processInfo.systemUptime - began) * 1000
         return cache.values.flatMap { $0 }.sorted { $0.id < $1.id }
+    }
+
+    private func chromeWindowTitles(_ window: AXUIElement) -> [String] {
+        // Read only the window and its immediate native root group. Do not walk
+        // web areas, tabs, or page content to infer a browser profile.
+        var titles = [kAXTitleAttribute, kAXDescriptionAttribute].compactMap { ax(window, $0) as? String }
+        for child in axChildren(window).prefix(12) where ax(child, kAXRoleAttribute) as? String == kAXGroupRole {
+            if let title = ax(child, kAXTitleAttribute) as? String { titles.append(title) }
+        }
+        return Array(Set(titles.filter { !$0.isEmpty }))
+    }
+
+    func windowIdentities() -> Set<WindowIdentity>? {
+        guard let rows = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] else { return nil }
+        return Set(rows.compactMap { row in
+            guard (row[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  let id = (row[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+                  let pid = (row[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, pid != getpid() else { return nil }
+            return WindowIdentity(pid: pid, windowID: id)
+        })
     }
 
     func occupancy() -> [UInt64: Set<UInt32>]? {
@@ -195,8 +238,9 @@ final class SystemAccess {
     }
 
     @MainActor func missionControl(display: Display, select: Desktop? = nil, create: Bool = false) async throws {
-        guard trusted else { throw AppError.message("Nadaj aplikacji uprawnienie Dostępność.") }
+        guard trusted else { throw AppError.message("Grant window management access to DeskPilot.") }
         let alreadyOpen = missionControlRoot() != nil
+        defer { if !alreadyOpen { escapeMissionControl() } }
         if !alreadyOpen {
             let url = URL(fileURLWithPath: "/System/Applications/Mission Control.app")
             let config = NSWorkspace.OpenConfiguration()
@@ -205,25 +249,33 @@ final class SystemAccess {
         var target: AXUIElement?
         for _ in 0..<20 {
             if let root = missionControlRoot() {
-                target = axChildren(root).first { (ax($0, "AXDisplayID") as? NSNumber)?.uint32Value == display.systemID }
+                target = missionControlDisplay(display.systemID, below: root)
                 if target != nil { break }
             }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
-        guard let target else { throw AppError.message("Mission Control nie udostępnił wybranego monitora.") }
+        guard let target else { throw AppError.message("Mission Control did not expose the selected display.") }
         try await Task.sleep(nanoseconds: 180_000_000)
         if create {
-            guard let button = find("mc.spaces.add", below: target), AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else { throw AppError.message("Nie udało się utworzyć biurka. Sprawdź limit biurek macOS.") }
+            guard let button = find("mc.spaces.add", below: target), AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else { throw AppError.message("Unable to create a desktop. Check the macOS Space limit.") }
             try await Task.sleep(nanoseconds: 250_000_000)
-            if !alreadyOpen { escapeMissionControl() }
         } else if let selected = select {
-            guard let list = find("mc.spaces.list", below: target) else { throw AppError.message("Brak listy biurek w Mission Control.") }
+            guard let list = find("mc.spaces.list", below: target) else { throw AppError.message("Mission Control did not expose its desktop list.") }
             let buttons = axChildren(list)
             // Re-check native identity before acting on a position.
             guard let current = spaces(displays: screens())?.first(where: { $0.id == selected.id }), current.displayID == display.id,
-                  current.ordinal < buttons.count else { throw AppError.message("Kolejność biurek uległa zmianie. Ponów przejście.") }
-            guard AXUIElementPerformAction(buttons[current.ordinal], kAXPressAction as CFString) == .success else { throw AppError.message("macOS odmówił przejścia na biurko.") }
+                  current.ordinal < buttons.count else { throw AppError.message("Desktop order changed. Try switching again.") }
+            guard AXUIElementPerformAction(buttons[current.ordinal], kAXPressAction as CFString) == .success else { throw AppError.message("macOS refused to switch desktops.") }
         }
+    }
+
+    private func missionControlDisplay(_ displayID: UInt32, below root: AXUIElement, depth: Int = 0) -> AXUIElement? {
+        if (ax(root, "AXDisplayID") as? NSNumber)?.uint32Value == displayID { return root }
+        guard depth < 3 else { return nil }
+        for child in axChildren(root) {
+            if let display = missionControlDisplay(displayID, below: child, depth: depth + 1) { return display }
+        }
+        return nil
     }
 
     func escapeMissionControl() {
