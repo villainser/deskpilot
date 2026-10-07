@@ -35,9 +35,19 @@ struct WindowInfo: Identifiable {
     var identity: WindowIdentity { WindowIdentity(pid: pid, windowID: id) }
 }
 
-struct WindowIdentity: Hashable {
+struct WindowIdentity: Hashable, Codable {
     let pid: Int32
     let windowID: UInt32
+}
+
+struct BorrowedWindow: Codable, Identifiable, Equatable {
+    var id: WindowIdentity
+    var processStarted: Date
+    var appID: String
+    var group: String
+    var homeDesktopID: String
+    var originalFrame: RelativeFrame
+    var wasMinimized: Bool
 }
 
 struct RoutingInbox {
@@ -129,6 +139,7 @@ struct AppState: Codable {
     var defaultProfileID: String?
     var chromeCatalogBookmark: Data?
     var chromeCatalogProfiles: [ChromeProfile]?
+    var borrowedWindows: [BorrowedWindow]?
 }
 
 struct ChromeProfile: Identifiable, Equatable, Codable {

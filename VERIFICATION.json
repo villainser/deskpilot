@@ -1,5 +1,5 @@
 {
-  "version": "0.2.5",
+  "version": "0.3.0",
   "date": "2026-10-07",
   "platform": "macOS 27.0.1 / Apple Silicon",
   "build": "passed",
@@ -8,7 +8,7 @@
     "failed": 0
   },
   "engineChecks": {
-    "passed": 43,
+    "passed": 75,
     "failed": 0,
     "environment": "Actual routing engine with an injected simulated desktop service and synthetic Chrome profile catalog. No live application windows or user settings are accessed.",
     "coverage": [
@@ -25,7 +25,19 @@
       "Failed creation leaves windows untouched; failed movement pauses automation",
       "Failed movement retries reuse the already created desktop",
       "A failed group move after a manual move preserves the last confirmed assignment",
-      "Existing WindowServer windows first exposed by Accessibility after enabling automation enter the routing queue"
+      "Existing WindowServer windows first exposed by Accessibility after enabling automation enter the routing queue",
+      "Successive summon commands move individual windows and keep permanent app/profile homes",
+      "Most recently focused eligible window is selected first; rapid presses queue without returning previous windows",
+      "Return restores one window and original geometry while other summoned windows remain",
+      "Saved layouts preserve home assignments and original geometry; restoration leaves summoned windows in place",
+      "Borrowed records survive app restart and reject recycled process identifiers",
+      "Automatic routing sends new siblings home without moving a summoned window; manual moves of borrowed windows do not reassign siblings",
+      "Explicit permanent assignment clears successfully moved windows from the temporary set",
+      "Chrome profiles remain individually identifiable and unknown profiles are excluded",
+      "Failed movement, failed geometry, missing homes and unsavable settings retain or roll back return records appropriately",
+      "Window closure removes stale return data; minimized state is restored",
+      "Global desktop numbering, focused-display selection, geometry adaptation and Space identity after monitor moves",
+      "Fullscreen and stale destinations are refused; changing the active destination during a move does not refocus the app"
     ]
   },
   "iconVerification": {
@@ -37,6 +49,7 @@
     "codeSignature": "passed"
   },
   "notYetVerified": [
+    "Live summon, return, keyboard registration, focus behavior and minimized windows in 0.3.0, including Chrome and multiple monitors",
     "Chrome catalog permission and recognition after upgrading to this packaged build",
     "Mission Control badge visibility, geometry and resource use on the target Mac",
     "Live Chrome profile recognition and automatic routing in this build",
@@ -46,7 +59,7 @@
     "Disconnect and reconnect on the target monitor setup",
     "Idle and active automation resource benchmarks"
   ],
-  "manualTestLimitation": "Browser-page inspection is unavailable under the computer-use restriction. Selecting the DeskPilot app also failed because the native computer-use connection closed. Synthetic tests are not presented as GUI or permission-grant verification.",
+  "manualTestLimitation": "No live GUI test was run for 0.3.0. Previous attempts to select DeskPilot failed when the native computer-use connection closed, and browser-page inspection was restricted. Synthetic tests do not establish live movement, focus or permission grants.",
   "namingScope": "DeskPilot panel and menu names plus optional click-through badges on Mission Control thumbnails. The underlying Apple labels are unchanged.",
   "bundleValidation": {
     "infoPlist": "passed",
@@ -113,5 +126,30 @@
     "scenario": "WindowServer lists a Chrome window before automation is enabled. Accessibility exposes it later on application activation, without a new window-created event. The previous engine skipped it; the corrected engine creates a desktop, confirms movement, and records its profile assignment.",
     "environment": "Real engine with a simulated system service",
     "liveVerification": "Pending in 0.2.5"
+  },
+  "summonAndReturn": {
+    "checksAdded": 32,
+    "environment": "Actual Engine with synthetic windows and an injected desktop service; no user windows or settings touched",
+    "liveVerification": "Pending",
+    "persistence": "Per-window original Space, relative frame, minimized state, app identity and process start time are written before movement. No titles are added to temporary-return records.",
+    "resourceBehavior": "No new idle timer. Focus order uses existing events; commands drain a bounded queue only while requested work is pending."
+  },
+  "nativeNameInvestigation": {
+    "platform": "macOS 27.0.1 (26A434)",
+    "method": "Read-only localization and executable symbol/string inspection plus upstream source review",
+    "localization": "WindowManager.app/Contents/Resources/Localizable.loctable: Desktop %@; Polish translation Biurko %@. Dock retains DesktopNum in its Polish localization.",
+    "binaryFindings": [
+      "SpacesBarSpaceLabel",
+      "spaceIDToDesktopLabelIndex",
+      "spaceCustomNames",
+      "CGSSpaceCopyName",
+      "CGSSpaceSetName"
+    ],
+    "interpretation": "A shared localized format and private symbol names do not establish a per-desktop preference. AltTab documents CGSSpaceCopyName as a UUID getter. No setter was invoked.",
+    "sources": [
+      "https://github.com/lwouis/alt-tab-macos/blob/master/src/experimentations/PrivateApis.swift",
+      "https://github.com/dado3212/spaces-renamer/blob/master/spaces-renamer/spacesRenamer.m"
+    ],
+    "result": "Native label replacement remains unimplemented and unverified. Existing click-through badges remain unchanged; no system resources, security settings or Space identifiers were modified."
   }
 }

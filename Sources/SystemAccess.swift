@@ -20,6 +20,10 @@ protocol SystemAccessProtocol: AnyObject {
     func readWindows(dirty: Set<Int32>?) -> [WindowInfo]
     func windowIdentities() -> Set<WindowIdentity>?
     func focusedWindowID() -> UInt32?
+    func pointerDisplayID() -> String?
+    func processStarted(_ pid: Int32) -> Date?
+    func focusWindow(_ windowID: UInt32) -> Bool
+    func setMinimized(_ minimized: Bool, windowID: UInt32) -> Bool
     func missionControlRoot() -> AXUIElement?
     @MainActor func missionControl(display: Display, select: Desktop?, create: Bool) async throws
     func setFrame(_ rect: CGRect, windowID: UInt32) -> Bool
@@ -232,6 +236,28 @@ final class SystemAccess: SystemAccessProtocol {
               let value = ax(AXUIElementCreateApplication(app.processIdentifier), kAXFocusedWindowAttribute), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
         let id = DPWindowID(value as! AXUIElement)
         return id == 0 ? nil : id
+    }
+
+    func pointerDisplayID() -> String? {
+        let mouse = NSEvent.mouseLocation
+        let point = CGPoint(x: mouse.x, y: (NSScreen.screens.first?.frame.maxY ?? 0) - mouse.y)
+        return screens().first { $0.frame.contains(point) }?.id
+    }
+
+    func processStarted(_ pid: Int32) -> Date? { NSRunningApplication(processIdentifier: pid)?.launchDate }
+
+    func setMinimized(_ minimized: Bool, windowID: UInt32) -> Bool {
+        guard let element = elements[windowID] else { return false }
+        return AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString, minimized ? kCFBooleanTrue : kCFBooleanFalse) == .success
+    }
+
+    func focusWindow(_ windowID: UInt32) -> Bool {
+        guard let element = elements[windowID] else { return false }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success, let app = NSRunningApplication(processIdentifier: pid) else { return false }
+        _ = AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
+        let raised = AXUIElementPerformAction(element, kAXRaiseAction as CFString) == .success
+        return app.activate(options: []) && raised
     }
 
     func find(_ id: String, below root: AXUIElement, depth: Int = 0) -> AXUIElement? {

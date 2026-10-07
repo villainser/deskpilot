@@ -9,6 +9,7 @@ A native macOS desktop manager built with Swift, SwiftUI and AppKit. Give each a
 - **Automatic desktops.** An unassigned app or Chrome profile gets a newly created macOS desktop. Its other windows join the same desktop; reopening it reuses the saved assignment while that desktop exists.
 - **Names that make sense.** Desktops use their assigned app or Chrome profile name. Choose a custom name with the pencil or the desktop context menu, or switch back to automatic naming. Optional badges show these names on Mission Control thumbnails.
 - **Chrome profiles.** Match profiles by their stable profile directories and the profile information exposed by Chrome's native accessibility window title. Windows belonging to different profiles are kept separate.
+- **Summon windows.** Bring successive windows from a numbered desktop to your active desktop. Return each window separately to its original desktop and size, while keeping permanent assignments intact.
 - **Shared desktops.** Add another app to a desktop and place windows on the left or right half of the display.
 - **Display layouts.** Save assignments and window geometry for a display setup. Restore a matching layout when displays change, with a default layout for one display.
 - **Native integration.** Keep macOS Spaces, Mission Control, gestures and manual desktop ordering. Access DeskPilot from the Dock, menu bar or keyboard.
@@ -51,11 +52,33 @@ Local builds use an ad hoc signature by default, so a rebuild can invalidate mac
 | Control–Option–Space | Show or hide the panel |
 | Control–Option–1…9 | Switch desktop |
 | Control–Option–Shift–1…9 | Assign the focused app or Chrome profile to a desktop |
+| Control–Option–Command–1…9 | Summon the next window from that desktop |
+| Control–Option–Command–Delete (Backspace) | Return the focused summoned window home |
 | Control–Option–Left / Right | Place the focused window on the left or right half |
 | Control–Option–P | Pause or resume automation |
 | Command-Q | Quit while DeskPilot is focused |
 
-Desktop numbers follow the current display and Space order. Assignments and names follow the Space's identity when it is reordered or moved to another display.
+Desktop shortcut numbers are unique across all displays, following the display list and Space order shown in the panel and menu. The first nine regular desktops have number shortcuts; fullscreen Spaces are excluded. Assignments and names follow the Space's identity when it is reordered or moved to another display.
+
+## Summon and return
+
+Focus a window on the display where you want to work, then press **Control–Option–Command–N**, where N is the source desktop number. Each press brings one more window; rapid presses queue in order. The first choice is the most recently focused eligible window, then the remaining windows. If multiple apps or Chrome profiles share the source desktop, their windows participate in the same sequence. Unknown Chrome profiles, fullscreen windows and windows on all Spaces are excluded. Once the source is empty, DeskPilot says there are no more windows instead of cycling windows back unexpectedly.
+
+Use **Control–Option–Left / Right** to arrange the windows side by side. Focus any summoned window and press **Control–Option–Command–Delete** to return just that window. It restores the original size and minimized state without switching to the home desktop. A returned window becomes available for another summon. The panel provides **Summon next**, a list of **Summoned windows**, and individual **Return home** buttons.
+
+The destination is the active desktop containing the focused window. With no focused application window, DeskPilot uses the display under the pointer. The destination must remain active; fullscreen destinations are refused. Moving between displays adapts the saved geometry to the destination's visible area.
+
+Temporary moves are recorded before movement and survive restarting DeskPilot. Records contain window/process identifiers, the app's start time, the home Space identity and geometry; they do not store window titles. Closed windows and restarted apps lose their old records. Automation, Organize now and layout restoration exclude summoned windows; saving a layout keeps their home assignments and original geometry. **Move to** is an explicit permanent assignment for the whole app/profile and clears its temporary records after a successful move.
+
+If the home desktop disappears, return stops with an explanation. It never substitutes another desktop with the same number. Reconnect the display or choose a new permanent home. If the original Space moves to another monitor, return follows its identity. Display changes and locking cancel queued commands. Movement, geometry and focus failures remain visible; a partial return retains its record so **Return home** can retry.
+
+## Native Mission Control labels
+
+DeskPilot's custom badges do not change Apple's underlying labels. Read-only inspection on macOS 27.0.1 found the shared `Desktop %@` localization (Polish: `Biurko %@`) in `/System/Library/CoreServices/WindowManager.app/Contents/Resources/Localizable.loctable`. The Dock also contains the older `DesktopNum` localization. Editing a shared format would not provide a different name for each desktop.
+
+The WindowManager executable contains `SpacesBarSpaceLabel`, `spaceIDToDesktopLabelIndex`, `spaceCustomNames` and imports `CGSSpaceCopyName` / `CGSSpaceSetName`. Those symbols do not establish a writable user preference or a supported per-desktop label API. In particular, [AltTab's private API experiments](https://github.com/lwouis/alt-tab-macos/blob/master/src/experimentations/PrivateApis.swift) describe `CGSSpaceCopyName` as returning a Space UUID, so writing through the similarly named setter is not a verified label-renaming solution.
+
+[Spaces Renamer](https://github.com/dado3212/spaces-renamer) replaces rendered text through injected code and requires disabling SIP; its [implementation](https://github.com/dado3212/spaces-renamer/blob/master/spaces-renamer/spacesRenamer.m) hooks layer methods rather than setting a desktop-name preference. That approach is not part of DeskPilot. No system resources, security settings or Space identifiers were changed during this investigation. Native per-desktop label replacement remains unimplemented and unverified; the existing badges remain available.
 
 ## Chrome profile matching
 
@@ -84,7 +107,7 @@ The app includes Apple's [other-application-data purpose message](https://develo
 
 ## Verification and limitations
 
-Version 0.2.5 is a development build. See [VERIFICATION.json](VERIFICATION.json) for the exact checks and remaining manual tests.
+Version 0.3.0 is a development build. See [VERIFICATION.json](VERIFICATION.json) for the exact checks and remaining manual tests.
 
 The local suite includes policy tests and tests of the real routing engine against a simulated desktop service. It covers desktop creation, app and Chrome grouping, late metadata, busy queues, failure recovery and automatic/custom names. These tests do not substitute for a live multi-display test.
 

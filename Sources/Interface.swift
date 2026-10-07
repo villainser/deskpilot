@@ -149,6 +149,24 @@ struct RootView: View {
                 Spacer()
                 Button("Organize now", systemImage: "sparkles") { engine.organize() }.disabled(!engine.trusted || engine.busy)
             }
+            Text("Summon next brings one window here each time. ⌃⌥⌘ 1…9 chooses its source desktop; ⌃⌥⌘ Delete returns the focused window home. Use ⌃⌥ ← / → to work side by side.").font(.callout).foregroundStyle(.secondary)
+            if !(engine.state.borrowedWindows ?? []).isEmpty {
+                GroupBox("Summoned windows") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(engine.windows.filter { engine.borrowed($0) != nil }) { w in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(w.profileName.map { "Chrome · \($0)" } ?? w.appName).bold()
+                                    Text(w.title.isEmpty ? "Application window" : w.title).lineLimit(1).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button("Return home") { engine.sendBack(w.id) }.disabled(engine.busy)
+                            }
+                        }
+                        Text("Each window keeps its original desktop and size, including after restarting DeskPilot. Automation and layout restoration leave it here until you return it.").font(.caption).foregroundStyle(.secondary)
+                    }.padding(10)
+                }
+            }
             ForEach(engine.displays) { display in
                 VStack(alignment: .leading, spacing: 14) {
                     HStack { Image(systemName: display.builtIn ? "laptopcomputer" : "display").foregroundStyle(.teal); Text(display.name).font(.headline); Spacer(); Text(display.builtIn ? "Built-in" : "External").font(.caption).foregroundStyle(.secondary) }
@@ -165,7 +183,7 @@ struct RootView: View {
         let rows = engine.windows.filter { $0.spaceIDs.contains(desktop.systemID) }
         return VStack(alignment: .leading, spacing: 13) {
             HStack {
-                Text(String(desktop.ordinal + 1)).font(.system(.caption, design: .monospaced).bold()).padding(6).background(Color.teal.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+                Text(engine.number(desktop)).font(.system(.caption, design: .monospaced).bold()).padding(6).background(Color.teal.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
                 Text(engine.name(desktop)).font(.headline).lineLimit(1).help(engine.name(desktop))
                 Spacer()
                 if desktop.active { Circle().fill(.teal).frame(width: 7, height: 7) }
@@ -183,6 +201,10 @@ struct RootView: View {
                     }
                     Spacer(minLength: 0)
                     Menu {
+                        if engine.borrowed(w) != nil {
+                            Button("Return home") { engine.sendBack(w.id) }
+                            Divider()
+                        }
                         Button("Left half") { engine.tile(windowID: w.id, side: "left") }
                         Button("Right half") { engine.tile(windowID: w.id, side: "right") }
                         Button("Fill display") { engine.tile(windowID: w.id, side: "fill") }
@@ -197,6 +219,7 @@ struct RootView: View {
             Divider()
             HStack {
                 Button("Go to") { engine.switchTo(desktop) }.disabled(!engine.trusted || engine.busy || desktop.active)
+                Button("Summon next") { engine.summon(desktop) }.disabled(!engine.trusted || engine.busy || desktop.fullScreen)
                 Spacer()
                 Menu("Add app") {
                     ForEach(uniqueWindows) { window in
@@ -283,6 +306,8 @@ struct RootView: View {
                     shortcut("Show / hide panel", "⌃⌥ Space")
                     shortcut("Switch to desktop 1–9", "⌃⌥ 1…9")
                     shortcut("Move app to desktop 1–9", "⌃⌥⇧ 1…9")
+                    shortcut("Summon next window from desktop 1–9", "⌃⌥⌘ 1…9")
+                    shortcut("Return focused window home", "⌃⌥⌘ Delete")
                     shortcut("Left / right half", "⌃⌥ ← / →")
                     shortcut("Pause / resume", "⌃⌥ P")
                 }.padding(14)

@@ -36,10 +36,12 @@ final class Hotkeys {
         register(2, key: 35, modifiers: modifier)
         register(3, key: 123, modifiers: modifier)
         register(4, key: 124, modifiers: modifier)
+        register(5, key: 51, modifiers: modifier | UInt32(cmdKey))
         let numbers: [UInt32] = [18, 19, 20, 21, 23, 22, 26, 28, 25]
         for (index, key) in numbers.enumerated() {
             register(UInt32(10 + index), key: key, modifiers: modifier)
             register(UInt32(30 + index), key: key, modifiers: modifier | UInt32(shiftKey))
+            register(UInt32(50 + index), key: key, modifiers: modifier | UInt32(cmdKey))
         }
     }
     private func register(_ id: UInt32, key: UInt32, modifiers: UInt32) {
@@ -137,7 +139,7 @@ final class Hotkeys {
         for display in engine.displays {
             let header = NSMenuItem(title: display.name, action: nil, keyEquivalent: ""); header.isEnabled = false; menu.addItem(header)
             for desktop in engine.desktops.filter({ $0.displayID == display.id }) {
-                let row = NSMenuItem(title: "\(desktop.ordinal + 1)  \(engine.name(desktop))", action: #selector(switchFromMenu(_:)), keyEquivalent: "")
+                let row = NSMenuItem(title: "\(engine.number(desktop))  \(engine.name(desktop))", action: #selector(switchFromMenu(_:)), keyEquivalent: "")
                 row.representedObject = desktop.id; row.target = self; row.state = desktop.active ? .on : .off; menu.addItem(row)
             }
         }
@@ -150,13 +152,18 @@ final class Hotkeys {
     func hotkey(_ id: UInt32) {
         if id == 1 { toggle(); return }
         if id == 2 { engine.toggleEnabled(); return }
+        if id == 5 {
+            if let window = engine.system.focusedWindowID() ?? (self.window.isKeyWindow ? engine.rememberedWindow : nil) { engine.sendBack(window) }
+            return
+        }
         if id == 3 || id == 4 {
             if let window = engine.system.focusedWindowID() { engine.tile(windowID: window, side: id == 3 ? "left" : "right") }
             return
         }
-        let regular = engine.displays.flatMap { display in engine.desktops.filter { $0.displayID == display.id && !$0.fullScreen } }
+        let regular = engine.numberedDesktops
         if id >= 10 && id <= 18, Int(id - 10) < regular.count { engine.switchTo(regular[Int(id - 10)]) }
         if id >= 30 && id <= 38, Int(id - 30) < regular.count, let window = engine.system.focusedWindowID() { engine.assign(window, to: regular[Int(id - 30)]) }
+        if id >= 50 && id <= 58, Int(id - 50) < regular.count { engine.summon(regular[Int(id - 50)]) }
     }
 }
 
