@@ -12,7 +12,7 @@ A native macOS desktop manager built with Swift, SwiftUI and AppKit. Keep each a
 - **Summon windows.** Bring successive windows from a numbered desktop to your active desktop. Return each window separately to its original desktop and size, while keeping permanent assignments intact.
 - **Explicit sharing.** Choose **Share desktop** to place apps together. Two visible windows from different apps or profiles are arranged side by side after sharing or summoning. Additional windows keep their positions.
 - **Focus follows the pointer.** Hover briefly over a visible window to activate it before clicking. Turn this off in Settings if you prefer click-to-focus.
-- **Quick window picker.** Press **Option-Space**, then a desktop number or click a row. Use the same picker to return individual summoned windows.
+- **Quick window picker.** Press **Control-Space**, then a desktop number or click a row. Use the same picker to return individual summoned windows.
 - **Display layouts.** Save assignments and window geometry for a display setup. Restore a matching layout when displays change, with a default layout for one display.
 - **Native integration.** Keep macOS Spaces, Mission Control, gestures and manual desktop ordering. Access DeskPilot from the Dock, menu bar or keyboard.
 - **Event-based updates.** Window and workspace events trigger reads. Startup retries are bounded; unresolved live windows can resume when their title or profile information changes.
@@ -49,7 +49,7 @@ Local builds use an ad hoc signature by default, so a rebuild can invalidate mac
 
 | Shortcut | Action |
 | --- | --- |
-| Option–Space | Open the quick summon and return picker |
+| Control–Space | Open the quick summon and return picker |
 | 1…9, while the picker is open | Bring the next window from that desktop |
 | Escape, while the picker is open | Close the picker |
 | Control–Option–Space | Show or hide the main panel |
@@ -65,7 +65,7 @@ Desktop shortcut numbers are unique across all displays, following the display l
 
 ## Summon and return
 
-Focus a window on the display where you want to work, then press **Option-Space**. Click a source desktop or press its number. The destination is captured when the picker opens. **Control–Option–Command–N** remains available as a direct advanced shortcut, where N is the source desktop number. Each press brings one more window; rapid presses queue in order. The first choice is the most recently focused eligible window, then the remaining windows. If multiple apps or Chrome profiles share the source desktop, their windows participate in the same sequence. Unknown Chrome profiles, fullscreen windows and windows on all Spaces are excluded. Once the source is empty, DeskPilot says there are no more windows instead of cycling windows back unexpectedly.
+Focus a window on the display where you want to work, then press **Control-Space**. Click a source desktop or press its number. The destination is captured when the picker opens. **Control–Option–Command–N** remains available as a direct advanced shortcut, where N is the source desktop number. Each press brings one more window; rapid presses queue in order. The first choice is the most recently focused eligible window, then the remaining windows. If multiple apps or Chrome profiles share the source desktop, their windows participate in the same sequence. Unknown Chrome profiles, fullscreen windows and windows on all Spaces are excluded. Once the source is empty, DeskPilot says there are no more windows instead of cycling windows back unexpectedly.
 
 Two eligible windows from different apps or profiles are arranged side by side automatically when their shared destination is explicitly authorized. **Control–Option–Left / Right** remains available for manual placement. Focus any summoned window and press **Control–Option–Command–Delete** to return just that window. It restores the original size and minimized state without switching to the home desktop. A returned window becomes available for another summon. The panel provides **Summon next**, a list of **Summoned windows**, and individual **Return home** buttons.
 
@@ -113,7 +113,7 @@ The app includes Apple's [other-application-data purpose message](https://develo
 
 ## Verification and limitations
 
-Version 0.3.1 is a development build. See [VERIFICATION.json](VERIFICATION.json) for the exact checks and remaining manual tests.
+Version 0.3.2 is a development build. See [VERIFICATION.json](VERIFICATION.json) for the exact checks and remaining manual tests.
 
 The local suite includes policy tests and tests of the real routing engine against a simulated desktop service. It covers desktop creation, app and Chrome grouping, late metadata, busy queues, failure recovery and automatic/custom names. These tests do not substitute for a live multi-display test.
 

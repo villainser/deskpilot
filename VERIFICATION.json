@@ -1,11 +1,12 @@
 {
-  "version": "0.3.1",
+  "version": "0.3.2",
   "date": "2026-10-09",
   "platform": "macOS 27.0.1 / Apple Silicon",
   "build": "passed",
   "coreChecks": {
     "passed": 62,
-    "failed": 0
+    "failed": 0,
+    "lastRunVersion": "0.3.1"
   },
   "engineChecks": {
     "passed": 94,
@@ -47,7 +48,8 @@
       "Exactly two eligible shared or summoned windows occupy separate display halves",
       "Returning an automatically tiled summoned window restores its original home and geometry",
       "Hover focus accepts active desktop windows, rejects inactive destinations and respects busy/disabled states"
-    ]
+    ],
+    "lastRunVersion": "0.3.1"
   },
   "regressionsReproduced": [
     {
@@ -60,11 +62,11 @@
     }
   ],
   "guiCheck": {
-    "result": "The 0.3.1 main panel opened and exposed the version, Share desktop controls and Option-Space help.",
-    "scope": "Pre-final build before the last saved-layout and pointer-dwell refinements; the final build was compiled but not relaunched.",
-    "permission": "The running rebuilt copy reported that window management access was not granted.",
-    "blocker": "Subsequent native UI calls failed with: Sky Computer Use native pipe closed before response. Reinitializing the connection did not recover it.",
-    "automationEnabledForTest": false
+    "result": "The previous 0.3.1 GUI was closed with Quit DeskPilot. The 0.3.2 application launched and wrote its version and application path to runtime-status.json.",
+    "scope": "Launch confirmed from the application runtime report; the new shortcut was not tested live.",
+    "permission": "The rebuilt 0.3.2 copy reported window management access as false.",
+    "blocker": "Native UI connection closed while opening 0.3.2: Sky Computer Use native pipe closed before response.",
+    "automationEnabledForTest": "Existing enabled preference retained; access was unavailable."
   },
   "bundleValidation": {
     "infoPlist": "passed",
@@ -83,7 +85,7 @@
   "notYetVerified": [
     "Live automatic desktop creation and routing in this packaged version",
     "Live Chrome profile recognition and permissions after upgrading",
-    "Live Option-Space registration, picker selection, summon and return",
+    "Live Control-Space registration, picker selection, summon and return",
     "Live pointer dwell, first-click interaction and side-by-side placement",
     "External-display disconnect/reconnect and full layout restoration",
     "Idle and active CPU/RAM benchmarks"
@@ -112,7 +114,7 @@
   "summonAndReturn": {
     "environment": "Actual engine with synthetic windows and an injected desktop service",
     "persistence": "Per-window original Space, relative frame, minimized state, app identity and process start time are written before movement. No titles are added to temporary-return records.",
-    "liveVerification": "Pending for 0.3.1"
+    "liveVerification": "Pending for 0.3.2"
   },
   "historicalLiveEvidence": [
     {
@@ -134,5 +136,12 @@
     "Returning a summoned window restores its recorded geometry; the resident window retains its current size.",
     "Dragging a single window does not authorize a new permanent home. Use Share desktop, Move to or summon for intentional grouping.",
     "Space management relies on private functions and Accessibility; macOS updates require compatibility checks."
-  ]
+  ],
+  "shortcutChange": {
+    "command": "Quick summon and return picker",
+    "previous": "Option-Space",
+    "current": "Control-Space",
+    "validation": "Carbon registration uses space key code 49 with controlKey; interface and README match. No routing logic changed.",
+    "liveVerification": "Pending; a system-wide registration conflict remains possible and is reported by the app."
+  }
 }

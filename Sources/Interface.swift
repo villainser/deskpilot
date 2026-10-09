@@ -148,7 +148,7 @@ struct RootView: View {
                 Spacer()
                 Button("Organize now", systemImage: "sparkles") { engine.organize() }.disabled(!engine.trusted || engine.busy)
             }
-            Text("Press ⌥ Space to choose a desktop and bring one window here. Press a number or click its row. Open the same picker to return individual windows home.").font(.callout).foregroundStyle(.secondary)
+            Text("Press ⌃ Space to choose a desktop and bring one window here. Press a number or click its row. Open the same picker to return individual windows home.").font(.callout).foregroundStyle(.secondary)
             if !(engine.state.borrowedWindows ?? []).isEmpty {
                 GroupBox("Summoned windows") {
                     VStack(alignment: .leading, spacing: 10) {
@@ -304,7 +304,7 @@ struct RootView: View {
             }
             GroupBox("Keyboard shortcuts") {
                 VStack(spacing: 13) {
-                    shortcut("Bring or return a window", "⌥ Space, then choose")
+                    shortcut("Bring or return a window", "⌃ Space, then choose")
                     shortcut("Show / hide panel", "⌃⌥ Space")
                     shortcut("Switch to desktop 1–9", "⌃⌥ 1…9")
                     shortcut("Move app to desktop 1–9", "⌃⌥⇧ 1…9")

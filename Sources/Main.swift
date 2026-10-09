@@ -37,7 +37,7 @@ final class Hotkeys {
         register(3, key: 123, modifiers: modifier)
         register(4, key: 124, modifiers: modifier)
         register(5, key: 51, modifiers: modifier | UInt32(cmdKey))
-        register(6, key: 49, modifiers: UInt32(optionKey))
+        register(6, key: 49, modifiers: UInt32(controlKey))
         let numbers: [UInt32] = [18, 19, 20, 21, 23, 22, 26, 28, 25]
         for (index, key) in numbers.enumerated() {
             register(UInt32(10 + index), key: key, modifiers: modifier)
