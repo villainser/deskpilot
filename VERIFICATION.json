@@ -1,17 +1,17 @@
 {
-  "version": "0.3.3",
+  "version": "0.3.4",
   "date": "2026-10-09",
   "platform": "macOS 27.0.1 / Apple Silicon",
   "build": "passed",
   "coreChecks": {
     "passed": 62,
     "failed": 0,
-    "lastRunVersion": "0.3.3"
+    "lastRunVersion": "0.3.4"
   },
   "engineChecks": {
-    "passed": 100,
+    "passed": 109,
     "failed": 0,
-    "environment": "Actual routing engine with an injected simulated desktop service and synthetic Chrome profile catalog. No live application windows or user settings are accessed.",
+    "environment": "Actual routing engine with an injected simulated desktop service and synthetic Chrome profile catalog. Native identity checks read only the test process start time. No live windows or user settings are accessed by the suite.",
     "coverage": [
       "A new app receives a newly created desktop even when an empty desktop exists",
       "Existing assignments are reused for subsequent windows",
@@ -51,9 +51,12 @@
       "A move and focus request that leave the window invisible fail with return data intact",
       "Picker actions receive an explicit success/failure result",
       "Disabled sources explain current destination, no accessible windows or unknown Chrome profile",
-      "A confirmed visible focused summon succeeds and a confirmed return clears its record"
+      "A confirmed visible focused summon succeeds and a confirmed return clears its record",
+      "A process without a LaunchServices launch date receives a stable native start time that survives JSON serialization",
+      "Invalid or absent processes do not receive an invented identity; unknown identity prevents movement without creating return data",
+      "Summon and return after a DeskPilot restart work with the native fallback identity"
     ],
-    "lastRunVersion": "0.3.3"
+    "lastRunVersion": "0.3.4"
   },
   "regressionsReproduced": [
     {
@@ -67,12 +70,16 @@
     {
       "before": "An accepted move/focus request was treated as success even when the window remained invisible.",
       "after": "The operation checks actual visibility and focus on the active destination and reports failure while preserving Return home."
+    },
+    {
+      "before": "Finder had no NSRunningApplication.launchDate on the test Mac. Summon aborted before any move with an app-or-display identification error despite granted window access.",
+      "after": "Process identity preserves the LaunchServices timestamp when available and falls back to the kernel process start time otherwise. Missing process identity and unavailable displays have separate errors."
     }
   ],
   "guiCheck": {
-    "result": "The user supplied a 0.3.2 picker screenshot and reported that clicking an enabled action did not bring a window. The 0.3.2 runtime confirmed access granted and reported no movement error. The exact live failure mechanism remains unresolved.",
-    "scope": "Version 0.3.3 was compiled and packaged; it has not been launched or visually verified.",
-    "blocker": "Native UI inspection subsequently failed with a closed pipe and a timeout. No alternate UI-control mechanism was used."
+    "result": "The running 0.3.3 app had window access and reported an app-or-display identification failure. A read-only process probe confirmed Finder had no LaunchServices launch date. The compiled 0.3.4 native code supplied a stable kernel start time for the same running Finder, retained the LaunchServices date for System Settings, and matched the existing saved return record.",
+    "scope": "The process identity failure is reproduced and the corrected native lookup is verified against running processes. The 0.3.4 bundle has been built and packaged; GUI summon and return are not yet verified.",
+    "blocker": "Native UI inspection failed with a closed pipe. No alternate UI-control mechanism was used."
   },
   "bundleValidation": {
     "infoPlist": "passed",
@@ -89,7 +96,7 @@
     "codeSignature": "passed"
   },
   "notYetVerified": [
-    "Live click and number-key actions in the nonactivating 0.3.3 picker",
+    "Live click and number-key actions in the nonactivating 0.3.4 picker",
     "Live summon, visibility/focus verification and return in the packaged version",
     "The specific cause of missing windows in the user screenshot; per-app discovery counters were added to identify it",
     "Chrome profile recognition and automatic routing after upgrading",
@@ -120,7 +127,7 @@
   "summonAndReturn": {
     "environment": "Actual engine with synthetic windows and an injected desktop service",
     "persistence": "Per-window original Space, relative frame, minimized state, app identity and process start time are written before movement. No titles are added to temporary-return records.",
-    "liveVerification": "Pending for 0.3.3"
+    "liveVerification": "Process identity verified against running Finder and System Settings; actual GUI summon and return pending for 0.3.4."
   },
   "historicalLiveEvidence": [
     {
@@ -155,5 +162,11 @@
     "feedback": "The first click is accepted; operations show progress and remain open on failure. Success closes only the originating picker session.",
     "hover": "Pointer focus is suspended while the picker is open.",
     "reference": "https://developer.apple.com/documentation/appkit/nswindow/stylemask-swift.struct/nonactivatingpanel"
+  },
+  "processIdentity": {
+    "primary": "NSRunningApplication.launchDate; preserved for compatibility with previously saved return records.",
+    "fallback": "proc_pidinfo with PROC_PIDTBSDINFO, including start-time microseconds; rejects invalid PIDs, incomplete responses and invalid timestamps.",
+    "verification": "The native regression fixture has no LaunchServices date. The real Finder also lacked it and received the expected stable kernel date. Existing System Settings return data remained valid.",
+    "scope": "Read-only metadata lookup. No additional privacy grant, background timer or SIP change."
   }
 }

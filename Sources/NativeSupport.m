@@ -5,6 +5,8 @@
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
 #import <mach-o/nlist.h>
+#import <libproc.h>
+#import <sys/proc_info.h>
 static const char *kSkyLight = "/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight";
 static const char *kAsyncSymbol = "__ZL54SLSPerformAsynchronousBridgedWindowManagementOperationP47SLSAsynchronousBridgedWindowManagementOperation";
 typedef int64_t (*PerformAsyncOperation)(void *operation);
@@ -82,6 +84,17 @@ uint32_t DPWindowID(AXUIElementRef element) {
     static AXError (*fn)(AXUIElementRef, uint32_t *);
     if (!fn) fn = dlsym(RTLD_DEFAULT, "_AXUIElementGetWindow");
     uint32_t result = 0; if (fn) fn(element, &result); return result;
+}
+NSDate *DPProcessStartDate(pid_t pid) {
+    if (pid <= 0) return nil;
+    // Keep the timestamp used by existing return records. LaunchServices does
+    // not supply it for every app (including Finder on some systems).
+    NSDate *launched = [NSRunningApplication runningApplicationWithProcessIdentifier:pid].launchDate;
+    if (launched) return launched;
+    struct proc_bsdinfo info = {0};
+    int bytes = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, sizeof(info));
+    if (bytes != sizeof(info) || info.pbi_start_tvsec == 0 || info.pbi_start_tvusec >= 1000000) return nil;
+    return [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)info.pbi_start_tvsec + (NSTimeInterval)info.pbi_start_tvusec / 1000000.0];
 }
 static id retainedOperation;
 BOOL DPCanMove(void) {

@@ -286,7 +286,7 @@ final class SystemAccess: SystemAccessProtocol {
         return nil
     }
 
-    func processStarted(_ pid: Int32) -> Date? { NSRunningApplication(processIdentifier: pid)?.launchDate }
+    func processStarted(_ pid: Int32) -> Date? { DPProcessStartDate(pid) }
 
     func setMinimized(_ minimized: Bool, windowID: UInt32) -> Bool {
         guard let element = elements[windowID] else { return false }

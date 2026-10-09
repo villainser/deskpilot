@@ -1007,10 +1007,14 @@ import ServiceManagement
             guard let window = candidates.first, let group = window.group else {
                 throw AppError.message("No more recognized windows to summon from this desktop. Return a window to use it again.")
             }
-            guard let started = self.system.processStarted(window.pid),
-                  let homeDisplay = self.displays.first(where: { $0.id == source.displayID }),
-                  let destinationDisplay = self.displays.first(where: { $0.id == destination.displayID }) else {
-                throw AppError.message("Unable to identify this window's app or display. No window was moved.")
+            guard let started = self.system.processStarted(window.pid) else {
+                throw AppError.message("Unable to verify the running instance of \(window.appName). Refresh windows and try again. No window was moved.")
+            }
+            guard let homeDisplay = self.displays.first(where: { $0.id == source.displayID }) else {
+                throw AppError.message("The source display is unavailable. Refresh windows and try again. No window was moved.")
+            }
+            guard let destinationDisplay = self.displays.first(where: { $0.id == destination.displayID }) else {
+                throw AppError.message("The destination display is unavailable. Refresh windows and try again. No window was moved.")
             }
             let loan = BorrowedWindow(id: window.identity, processStarted: started, appID: window.appID, group: group,
                                       homeDesktopID: source.id, originalFrame: RelativeFrame(window.frame, in: homeDisplay.visibleFrame), wasMinimized: window.minimized)

@@ -1,7 +1,8 @@
 import AppKit
 
 // Exercise the actual routing engine against a deterministic desktop service.
-// No running applications, browser windows or user settings are accessed.
+// Only this test process's start time is read from the native service.
+// No live windows or user settings are accessed.
 final class TestSystem: SystemAccessProtocol {
     var onEvent: ((String, Int32?, UInt32?) -> Void)?
     var trusted = true
@@ -22,7 +23,7 @@ final class TestSystem: SystemAccessProtocol {
     var focused: UInt32?
     var invisibleWindows = Set<UInt32>()
     var pointerDisplay: String? = "screen"
-    var launchDate = Date(timeIntervalSince1970: 100)
+    var launchDate: Date? = Date(timeIntervalSince1970: 100)
     var extraDisplays: [Display] = []
     var failFrame = false
     var minimizedWrites: [UInt32: Bool] = [:]
@@ -94,6 +95,34 @@ final class TestSystem: SystemAccessProtocol {
                 try? await Task.sleep(nanoseconds: 50_000_000)
             }
         }
+
+        // A command-line process has no LaunchServices launch date, just like
+        // the Finder instance that triggered the reported summon failure.
+        let processStart = SystemAccess().processStarted(getpid())
+        check(NSRunningApplication.current.launchDate == nil, "The native regression fixture has no LaunchServices start date")
+        check(processStart != nil && processStart! > Date(timeIntervalSince1970: 0) && processStart! <= Date(),
+              "An app without a LaunchServices date still has a real process start time")
+        check(processStart == SystemAccess().processStarted(getpid()), "Process identity is stable across service instances")
+        let restoredStart = try JSONDecoder().decode(Date.self, from: JSONEncoder().encode(processStart!))
+        check(restoredStart == processStart, "Native process identity survives return-record serialization exactly")
+        check([-1, 0, Int32.max].allSatisfy { DPProcessStartDate($0) == nil }, "Invalid and absent processes do not receive an invented identity")
+
+        let identitySystem = TestSystem(); identitySystem.windows = [window(990, space: 2)]
+        identitySystem.launchDate = nil
+        let identityEngine = make(identitySystem); identityEngine.state.enabled = false
+        let unidentifiedMove = await identityEngine.summonNextWindow(from: "existing-empty", to: "home")
+        check(!unidentifiedMove && identitySystem.moves == 0 && (identityEngine.state.borrowedWindows ?? []).isEmpty,
+              "A genuinely unreadable process identity leaves the window and return records untouched")
+        check(identityEngine.lastError?.contains("running instance of Editor") == true,
+              "A process identity failure is distinguished from an unavailable display")
+        identitySystem.launchDate = processStart
+        let identifiedMove = await identityEngine.summonNextWindow(from: "existing-empty", to: "home")
+        check(identifiedMove && identitySystem.windows[0].spaceIDs == [1], "A native fallback identity allows the summon to proceed")
+        let identityRestart = Engine(dataURL: identityEngine.dataURL, system: identitySystem, chromeProfilesURL: chrome)
+        identityRestart.refresh(full: true)
+        let identifiedReturn = await identityRestart.returnWindow(990)
+        check(identifiedReturn && identitySystem.windows[0].spaceIDs == [2] && (identityRestart.state.borrowedWindows ?? []).isEmpty,
+              "The fallback identity preserves return after a DeskPilot restart")
 
         let basic = TestSystem(); basic.windows = [window(1), window(2)]
         let engine = make(basic)
