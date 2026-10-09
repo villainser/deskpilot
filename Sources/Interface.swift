@@ -13,7 +13,6 @@ final class PanelState: ObservableObject {
 struct RootView: View {
     @ObservedObject var engine: Engine
     @ObservedObject var ui: PanelState
-    @AppStorage(MissionControlNames.preference) private var showMissionControlNames = true
 
     let sections = [("Desktops", "rectangle.3.group"), ("Assignments", "pin"), ("Layouts", "display.2"), ("Settings", "slider.horizontal.3"), ("Diagnostics", "waveform.path.ecg")]
 
@@ -149,7 +148,7 @@ struct RootView: View {
                 Spacer()
                 Button("Organize now", systemImage: "sparkles") { engine.organize() }.disabled(!engine.trusted || engine.busy)
             }
-            Text("Summon next brings one window here each time. ⌃⌥⌘ 1…9 chooses its source desktop; ⌃⌥⌘ Delete returns the focused window home. Use ⌃⌥ ← / → to work side by side.").font(.callout).foregroundStyle(.secondary)
+            Text("Press ⌥ Space to choose a desktop and bring one window here. Press a number or click its row. Open the same picker to return individual windows home.").font(.callout).foregroundStyle(.secondary)
             if !(engine.state.borrowedWindows ?? []).isEmpty {
                 GroupBox("Summoned windows") {
                     VStack(alignment: .leading, spacing: 10) {
@@ -210,7 +209,7 @@ struct RootView: View {
                         Button("Fill display") { engine.tile(windowID: w.id, side: "fill") }
                         Divider()
                         ForEach(engine.desktops.filter { !$0.fullScreen }) { d in
-                            Button("Move to \(engine.name(d))") { engine.assign(w.id, to: d) }
+                            Button("\(engine.hasOtherGroups(on: d, than: w.group ?? "") ? "Share" : "Move to") \(engine.name(d))") { engine.assign(w.id, to: d, allowSharing: true) }
                         }
                     } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).frame(width: 20).disabled(engine.busy)
                 }
@@ -221,9 +220,9 @@ struct RootView: View {
                 Button("Go to") { engine.switchTo(desktop) }.disabled(!engine.trusted || engine.busy || desktop.active)
                 Button("Summon next") { engine.summon(desktop) }.disabled(!engine.trusted || engine.busy || desktop.fullScreen)
                 Spacer()
-                Menu("Add app") {
+                Menu("Share desktop") {
                     ForEach(uniqueWindows) { window in
-                        Button(window.profileName.map { "Chrome · \($0)" } ?? window.appName) { engine.assign(window.id, to: desktop) }
+                        Button(window.profileName.map { "Chrome · \($0)" } ?? window.appName) { engine.assign(window.id, to: desktop, allowSharing: true) }
                     }
                 }.disabled(engine.busy || desktop.fullScreen || uniqueWindows.isEmpty)
             }.controlSize(.small)
@@ -255,18 +254,16 @@ struct RootView: View {
                     Spacer()
                     Menu("Change desktop") {
                         ForEach(engine.desktops.filter { !$0.fullScreen }) { d in
-                            Button(engine.name(d)) {
-                                if let w = engine.windows.first(where: { $0.group == rule.id }) { engine.assign(w.id, to: d) }
-                                else if let index = engine.state.assignments.firstIndex(where: { $0.id == rule.id }) {
-                                    engine.state.assignments[index].desktopID = d.id; engine.state.assignments[index].displayID = d.displayID; engine.state.assignments[index].ordinal = d.ordinal; engine.save()
-                                }
+                            Button("\(engine.hasOtherGroups(on: d, than: rule.id) ? "Share " : "")\(engine.name(d))") {
+                                if let w = engine.windows.first(where: { $0.group == rule.id }) { engine.assign(w.id, to: d, allowSharing: true) }
+                                else { engine.assignSavedGroup(rule.id, to: d) }
                             }
                         }
                     }.frame(width: 145)
                     Button { engine.state.assignments.removeAll { $0.id == rule.id }; engine.save() } label: { Image(systemName: "pin.slash") }.help("Remove assignment")
                 }.padding(17).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
             }
-            Text("Assignments apply to an app or one Chrome profile. Multiple apps can share a desktop. Reordering desktops in Mission Control preserves assignments.").font(.callout).foregroundStyle(.secondary)
+            Text("Apps stay on their assigned desktops. Use Share desktop to place apps together. Dragging an individual window does not change its assignment; reordering whole desktops in Mission Control preserves it.").font(.callout).foregroundStyle(.secondary)
         }
     }
 
@@ -296,6 +293,10 @@ struct RootView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     Toggle("Automatically assign apps and profiles", isOn: Binding(get: { engine.state.enabled }, set: { _ in engine.toggleEnabled() }))
                     Text("Enabling automation organizes open windows and handles new ones as they appear.").font(.caption).foregroundStyle(.secondary)
+                    Toggle("Activate windows under the pointer", isOn: Binding(get: { engine.state.focusFollowsMouse ?? true }, set: { engine.state.focusFollowsMouse = $0; engine.save() }))
+                    Text("Hover briefly over a window to activate it before clicking. Paused while dragging, holding modifier keys or using DeskPilot's panel.").font(.caption).foregroundStyle(.secondary)
+                    Toggle("Arrange shared windows side by side", isOn: Binding(get: { engine.state.autoTileSharedWindows ?? true }, set: { engine.state.autoTileSharedWindows = $0; engine.save() }))
+                    Text("After sharing or summoning, two visible windows from different apps or profiles split the display. Additional windows keep their positions.").font(.caption).foregroundStyle(.secondary)
                     Toggle("Launch missing apps when restoring a layout", isOn: Binding(get: { engine.state.launchMissingApps }, set: { engine.state.launchMissingApps = $0; engine.save() }))
                     Text("Launching an app does not restore closed documents or browser tabs.").font(.caption).foregroundStyle(.secondary)
                     Toggle("Start DeskPilot at login", isOn: Binding(get: { SMAppService.mainApp.status == .enabled }, set: { engine.setLogin($0) }))
@@ -303,6 +304,7 @@ struct RootView: View {
             }
             GroupBox("Keyboard shortcuts") {
                 VStack(spacing: 13) {
+                    shortcut("Bring or return a window", "⌥ Space, then choose")
                     shortcut("Show / hide panel", "⌃⌥ Space")
                     shortcut("Switch to desktop 1–9", "⌃⌥ 1…9")
                     shortcut("Move app to desktop 1–9", "⌃⌥⇧ 1…9")
@@ -314,9 +316,6 @@ struct RootView: View {
             }
             GroupBox("macOS integration") {
                 VStack(alignment: .leading, spacing: 12) {
-                    Toggle("Show names in Mission Control", isOn: $showMissionControlNames)
-                        .onChange(of: showMissionControlNames) { NotificationCenter.default.post(name: MissionControlNames.preferenceChanged, object: nil) }
-                    Text("DeskPilot places name badges on Mission Control thumbnails. They let clicks and dragging pass through. Apple's system labels are unchanged; switching this off removes the badges and stops their background check.")
                     Text("In System Settings → Desktop & Dock, turn off automatic Space reordering and enable Displays have separate Spaces.")
                     Button("Open Desktop & Dock") { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Desktop-Settings.extension")!) }
                 }.font(.callout).padding(14).frame(maxWidth: .infinity, alignment: .leading)
@@ -338,7 +337,7 @@ struct RootView: View {
                     shortcut("Chrome windows found", String(engine.windows.filter { $0.appID == "com.google.Chrome" }.count))
                     shortcut("Chrome windows with a known profile", String(engine.windows.filter { $0.appID == "com.google.Chrome" && $0.group != nil }.count))
                     shortcut("Window routing idle polling", "Off")
-                    shortcut("Mission Control name checks", showMissionControlNames ? "1.5 s idle · 0.25 s visible" : "Off")
+                    shortcut("Mission Control overlays", "Off")
                     shortcut("Screen previews", "Not used")
                 }.padding(15)
             }

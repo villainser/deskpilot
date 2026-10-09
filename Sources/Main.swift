@@ -37,6 +37,7 @@ final class Hotkeys {
         register(3, key: 123, modifiers: modifier)
         register(4, key: 124, modifiers: modifier)
         register(5, key: 51, modifiers: modifier | UInt32(cmdKey))
+        register(6, key: 49, modifiers: UInt32(optionKey))
         let numbers: [UInt32] = [18, 19, 20, 21, 23, 22, 26, 28, 25]
         for (index, key) in numbers.enumerated() {
             register(UInt32(10 + index), key: key, modifiers: modifier)
@@ -57,7 +58,8 @@ final class Hotkeys {
     var item: NSStatusItem!
     var engine: Engine!
     let hotkeys = Hotkeys()
-    var missionControlNames: MissionControlNames?
+    var hoverFocus: HoverFocus?
+    var quickPanel: NSPanel?
     private var showToken: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -65,7 +67,7 @@ final class Hotkeys {
         var dataURL: URL?
         if let index = args.firstIndex(of: "--data-dir"), index + 1 < args.count { dataURL = URL(fileURLWithPath: args[index + 1], isDirectory: true).appendingPathComponent("state.json") }
         engine = Engine(dataURL: dataURL)
-        engine.onChange = { [weak self] in self?.updateMenu(); self?.missionControlNames?.namesChanged() }
+        engine.onChange = { [weak self] in self?.updateMenu(); self?.hoverFocus?.update() }
         engine.start()
         engine.writeRuntimeStatus()
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
@@ -78,8 +80,8 @@ final class Hotkeys {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         updateMenu()
         makeApplicationMenu()
-        missionControlNames = MissionControlNames(engine: engine)
-        missionControlNames?.start()
+        hoverFocus = HoverFocus(engine: engine)
+        hoverFocus?.update()
         showToken = DistributedNotificationCenter.default().addObserver(forName: .init("pl.deskpilot.native.show"), object: engine.dataURL.deletingLastPathComponent().path, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.show() }
         }
@@ -93,7 +95,7 @@ final class Hotkeys {
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool { sender.orderOut(nil); return false }
-    func applicationWillTerminate(_ notification: Notification) { missionControlNames?.stop() }
+    func applicationWillTerminate(_ notification: Notification) { hoverFocus?.stop() }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { show(); return true }
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -122,6 +124,35 @@ final class Hotkeys {
     @objc func toggle() { if window.isVisible && window.isKeyWindow { window.orderOut(nil) } else { show() } }
     @objc func pause() { engine.toggleEnabled() }
     @objc func quit() { NSApp.terminate(nil) }
+    @objc func showQuick() {
+        if quickPanel?.isVisible == true { quickPanel?.orderOut(nil); return }
+        engine.refresh(full: true)
+        guard engine.trusted else { show(); return }
+        do {
+            let destination = try engine.activeDestination()
+            let previousApp = NSWorkspace.shared.frontmostApplication
+            if let id = engine.system.focusedWindowID() { engine.rememberedWindow = id }
+            if quickPanel == nil {
+                let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 500), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+                panel.title = "Bring a window here"
+                panel.isReleasedWhenClosed = false
+                panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+                panel.level = .floating
+                panel.delegate = self
+                quickPanel = panel
+            }
+            quickPanel?.contentView = NSHostingView(rootView: QuickWorkspaceView(engine: engine, destination: destination,
+                summon: { [weak self] source in self?.quickPanel?.orderOut(nil); self?.engine.summon(source, destinationID: destination.id) },
+                sendBack: { [weak self] id in self?.quickPanel?.orderOut(nil); self?.engine.sendBack(id) },
+                cancel: { [weak self] in self?.quickPanel?.orderOut(nil); previousApp?.activate(options: []) }))
+            let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
+            if let frame = screen?.visibleFrame {
+                quickPanel?.setFrameOrigin(NSPoint(x: frame.midX - 220, y: frame.midY - 250))
+            }
+            quickPanel?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } catch { engine.fail(error); show() }
+    }
     @objc func switchFromMenu(_ sender: NSMenuItem) {
         if let id = sender.representedObject as? String, let desktop = engine.desktops.first(where: { $0.id == id }) { engine.switchTo(desktop) }
     }
@@ -135,6 +166,8 @@ final class Hotkeys {
         let menu = NSMenu()
         let open = NSMenuItem(title: "Open DeskPilot", action: #selector(show), keyEquivalent: "")
         open.target = self; menu.addItem(open)
+        let quick = NSMenuItem(title: "Bring a window here…", action: #selector(showQuick), keyEquivalent: "")
+        quick.target = self; menu.addItem(quick)
         menu.addItem(.separator())
         for display in engine.displays {
             let header = NSMenuItem(title: display.name, action: nil, keyEquivalent: ""); header.isEnabled = false; menu.addItem(header)
@@ -150,6 +183,7 @@ final class Hotkeys {
     }
 
     func hotkey(_ id: UInt32) {
+        if id == 6 { showQuick(); return }
         if id == 1 { toggle(); return }
         if id == 2 { engine.toggleEnabled(); return }
         if id == 5 {

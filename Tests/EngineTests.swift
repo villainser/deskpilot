@@ -76,6 +76,7 @@ final class TestSystem: SystemAccessProtocol {
         func make(_ system: TestSystem) -> Engine {
             let engine = Engine(dataURL: root.appendingPathComponent(UUID().uuidString).appendingPathComponent("state.json"), system: system, chromeProfilesURL: chrome)
             engine.state.enabled = true; engine.state.automaticProfiles = false
+            engine.state.autoTileSharedWindows = false
             engine.refresh(full: true)
             return engine
         }
@@ -104,6 +105,42 @@ final class TestSystem: SystemAccessProtocol {
         engine.rename(basic.desktops.last!, to: "")
         check(engine.name(basic.desktops.last!) == "Editor", "Clearing a rename restores the app name")
         engine.state.enabled = false
+
+        let lockingSystem = TestSystem(); lockingSystem.windows = [window(901)]
+        let locking = make(lockingSystem)
+        lockingSystem.onBeginMove = {
+            lockingSystem.onBeginMove = nil
+            locking.event("com.apple.screenIsLocked", pid: nil, windowID: nil)
+        }
+        await locking.routeNew(locking.windows)
+        check(locking.state.enabled && locking.state.automationPauseReason == nil,
+              "Locking during a move cancels the operation without disabling automation")
+        check(locking.lastError == nil && locking.status == "Mac is locked",
+              "Expected lock cancellation does not become a movement error")
+        locking.state.enabled = false
+
+        let changingSystem = TestSystem()
+        changingSystem.windows = [window(902), window(903, app: "terminal")]
+        let changing = make(changingSystem)
+        changing.record(changing.windows[0], on: changingSystem.desktops[1])
+        changingSystem.onBeginMove = {
+            changingSystem.onBeginMove = nil
+            let old = changingSystem.display
+            changingSystem.display = Display(id: old.id, systemID: old.systemID, name: old.name, builtIn: old.builtIn,
+                                             frame: CGRect(x: 0, y: 0, width: 1280, height: 800),
+                                             visibleFrame: CGRect(x: 0, y: 30, width: 1280, height: 770))
+            changing.event("displays", pid: nil, windowID: nil)
+        }
+        await changing.routeNew(changing.windows)
+        check(changing.state.enabled && changing.state.automationPauseReason == nil,
+              "A display change during a move does not disable automation")
+        for _ in 0..<160 {
+            if changingSystem.windows[1].spaceIDs == [101] && !changing.busy { break }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        check(changingSystem.creates == 1 && changingSystem.windows[1].spaceIDs == [101],
+              "Routing resumes after displays settle even when automatic layout restoration is off")
+        changing.state.enabled = false
 
         let browser = TestSystem()
         browser.windows = [window(10, app: "com.google.Chrome", title: "Page - Google Chrome - Work"), window(11, app: "com.google.Chrome", title: "Other - Google Chrome - Home"), window(12, app: "com.google.Chrome", title: "More - Google Chrome - Work")]
@@ -226,6 +263,84 @@ final class TestSystem: SystemAccessProtocol {
         await settle(following) { following.lastError != nil }
         check(following.lastError != nil && following.state.assignments[0].desktopID == "home", "Failed group movement after a manual move preserves the last confirmed assignment")
         following.state.enabled = false
+
+        let pinnedSystem = TestSystem(); pinnedSystem.windows = [window(910), window(911)]
+        let pinned = make(pinnedSystem)
+        pinned.record(pinned.windows[0], on: pinnedSystem.desktops[0])
+        pinnedSystem.windows[0].spaceIDs = [2]
+        pinned.refresh(full: true)
+        await settle(pinned) { pinnedSystem.windows[0].spaceIDs == [1] }
+        check(pinnedSystem.windows.allSatisfy { $0.spaceIDs == [1] } && pinned.state.assignments[0].desktopID == "home",
+              "A drifting window returns home without pulling its siblings or changing its assignment")
+        pinned.state.enabled = false
+
+        let sharingSystem = TestSystem(); sharingSystem.windows = [window(920), window(921, app: "terminal", space: 2)]
+        let sharing = make(sharingSystem); sharing.state.enabled = false
+        sharing.record(sharing.windows[0], on: sharingSystem.desktops[0])
+        sharing.record(sharing.windows[1], on: sharingSystem.desktops[1])
+        sharing.assign(920, to: sharingSystem.desktops[1])
+        check(sharing.lastError != nil && sharingSystem.moves == 0,
+              "A plain assignment shortcut cannot silently merge apps onto an occupied desktop")
+        sharing.state.autoTileSharedWindows = true
+        sharing.assign(920, to: sharingSystem.desktops[1], allowSharing: true)
+        await settle(sharing) { sharingSystem.windows[0].spaceIDs == [2] && sharing.state.assignments.allSatisfy { $0.desktopID == "existing-empty" } }
+        check(sharingSystem.windows.allSatisfy { $0.spaceIDs == [2] } && Set(sharing.state.sharedDesktopGroups?["existing-empty"] ?? []) == ["editor", "terminal"],
+              "Share desktop records explicit consent and keeps both permanent homes together")
+        check(sharingSystem.windows[0].frame.maxX < sharingSystem.windows[1].frame.minX && sharingSystem.windows[0].frame.height == sharingSystem.windows[1].frame.height,
+              "Two shared app windows automatically occupy separate halves")
+        sharing.state.enabled = true
+        await sharing.routeNew(sharing.windows)
+        check(sharingSystem.creates == 0, "Automatic routing preserves explicitly shared desktops")
+        sharing.state.enabled = false
+        let reopenedSharing = Engine(dataURL: sharing.dataURL, system: sharingSystem, chromeProfilesURL: chrome)
+        check(reopenedSharing.state.sharedDesktopGroups == sharing.state.sharedDesktopGroups, "Sharing consent survives restart")
+
+        let savedSharingSystem = TestSystem()
+        savedSharingSystem.windows = [window(925, app: "terminal"), window(926)]
+        let savedSharing = make(savedSharingSystem); savedSharing.state.enabled = false
+        savedSharing.saveProfile(name: "Together", fallback: false)
+        check(Set(savedSharing.state.sharedDesktopGroups?["home"] ?? []) == ["terminal", "editor"],
+              "Saving an intentional shared layout records consent before the next routing pass")
+        let sharedProfile = savedSharing.state.profiles.last!
+        savedSharing.state.sharedDesktopGroups = nil
+        savedSharingSystem.windows[0].spaceIDs = [2]
+        savedSharing.refresh(full: true); savedSharing.activeProfileID = nil
+        savedSharing.restore(sharedProfile)
+        await settle(savedSharing) { savedSharing.activeProfileID == sharedProfile.id }
+        check(savedSharingSystem.creates == 0 && savedSharingSystem.windows.allSatisfy { $0.spaceIDs == [1] },
+              "Restoring a shared layout preserves its desktop regardless of group order")
+
+        let collisionSystem = TestSystem(); collisionSystem.windows = [window(930), window(931, app: "terminal")]
+        let collision = make(collisionSystem)
+        for w in collision.windows { collision.record(w, on: collisionSystem.desktops[0]) }
+        await collision.routeNew(collision.windows)
+        check(collisionSystem.creates == 1 && collisionSystem.windows[0].spaceIDs != collisionSystem.windows[1].spaceIDs,
+              "Old unapproved shared assignments separate instead of silently keeping apps together")
+        collision.state.enabled = false
+
+        let hoverSystem = TestSystem(); hoverSystem.windows = [window(940), window(941), window(942, space: 2)]
+        let hover = make(hoverSystem); hover.state.enabled = false
+        hoverSystem.focused = 940
+        hover.focusHoveredWindow(941)
+        check(hoverSystem.focused == 941, "Hover can activate a visible window on the active desktop")
+        hover.focusHoveredWindow(942)
+        check(hoverSystem.focused == 941, "Hover never follows a window onto an inactive desktop")
+        hover.busy = true; hover.focusHoveredWindow(940); hover.busy = false
+        check(hoverSystem.focused == 941, "Hover cannot steal focus during window movement")
+        hover.state.focusFollowsMouse = false; hover.focusHoveredWindow(940)
+        check(hoverSystem.focused == 941, "Disabling focus follows mouse prevents focus changes")
+
+        let splitLoanSystem = TestSystem(); splitLoanSystem.windows = [window(950), window(951, app: "terminal", space: 2)]
+        let splitLoan = make(splitLoanSystem); splitLoan.state.enabled = false; splitLoan.state.autoTileSharedWindows = true
+        splitLoan.record(splitLoan.windows[0], on: splitLoanSystem.desktops[0])
+        splitLoan.record(splitLoan.windows[1], on: splitLoanSystem.desktops[1])
+        let originalLoanFrame = splitLoanSystem.windows[1].frame
+        await splitLoan.summonNextWindow(from: "existing-empty", to: "home")
+        check(splitLoanSystem.windows[0].frame.maxX < splitLoanSystem.windows[1].frame.minX,
+              "An explicitly summoned second app automatically shares the display side by side")
+        await splitLoan.returnWindow(951)
+        check(splitLoanSystem.windows[1].frame == originalLoanFrame && splitLoanSystem.windows[1].spaceIDs == [2],
+              "Returning an automatically tiled summoned window restores its original home and size")
 
         let noSpaces = TestSystem(); noSpaces.failedSpaceReads = 1
         let catalog = make(noSpaces)

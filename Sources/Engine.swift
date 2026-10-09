@@ -245,14 +245,15 @@ import ServiceManagement
         manualChromeBindings = manualChromeBindings.filter { live.contains($0.key) }
         if trusted && !busy { reconcileBorrowedWindows(live: liveServerWindows) }
         refreshes += 1; lastReadMilliseconds = system.lastReadMilliseconds
-        var manual: [(WindowInfo, Desktop)] = []
-        if hasBaseline && state.enabled && !busy && !restoring && Date() > guardUntil && Date().timeIntervalSince(lastOwnMovement) > 2 {
+        if hasBaseline && state.enabled && !busy && !restoring {
             for window in windows {
-                guard borrowed(window) == nil, let key = window.group, let before = previous[window.id], before.0 == window.pid,
-                      window.spaceIDs.count == 1, before.1 != window.spaceIDs[0],
-                      let destination = desktops.first(where: { $0.systemID == window.spaceIDs[0] && !$0.fullScreen }),
-                      state.assignments.contains(where: { $0.id == key }), system.missionControlRoot() == nil else { continue }
-                manual.append((window, destination))
+                guard borrowed(window) == nil, let key = window.group, window.spaceIDs.count == 1,
+                      let rule = state.assignments.first(where: { $0.id == key }),
+                      let home = desktops.first(where: { $0.id == (temporaryTargets[key] ?? rule.desktopID) && !$0.fullScreen }),
+                      window.spaceIDs != [home.systemID] else { continue }
+                // Movement is not consent to change an app's permanent home.
+                // Explicit assignment and temporary summon have their own paths.
+                routingInbox.enqueue(window.identity)
             }
         }
         previous = Dictionary(uniqueKeysWithValues: windows.compactMap { w in w.spaceIDs.count == 1 ? (w.id, (w.pid, w.spaceIDs[0])) : nil })
@@ -274,16 +275,7 @@ import ServiceManagement
         let deadline = Date().addingTimeInterval(-8)
         launching = launching.filter { $0.value > deadline }
         if routingInbox.needsRetry() || !launching.isEmpty { schedule(delay: 1, full: true) }
-        if !manual.isEmpty {
-            Task { await runOperation {
-                var handled = Set<String>()
-                for (window, destination) in manual {
-                    guard let key = window.group, handled.insert(key).inserted else { continue }
-                    try await self.moveGroup(key, to: destination)
-                    self.record(window, on: destination)
-                }
-            } }
-        } else if !new.isEmpty {
+        if !new.isEmpty {
             Task { await routeNew(new) }
         }
     }
@@ -293,7 +285,7 @@ import ServiceManagement
     }
 
     private func checkpoint() throws {
-        guard !locked, operationGeneration == generation else { throw AppError.message("The operation was cancelled after a system state change.") }
+        guard !locked, operationGeneration == generation else { throw CancellationError() }
     }
 
     func name(_ desktop: Desktop) -> String {
@@ -547,7 +539,7 @@ import ServiceManagement
         guard let key = window.group else { throw AppError.message("Choose a Chrome profile for this window.") }
         if let id = temporaryTargets[key], let desktop = desktops.first(where: { $0.id == id && !$0.fullScreen }) { return desktop }
         let rule = state.assignments.first { $0.id == key }
-        if let rule, let desktop = Policy.target(for: rule, desktops: desktops, displays: displays) { return desktop }
+        if let rule, let desktop = Policy.target(for: rule, desktops: desktops, displays: displays), canKeepAssignment(key, on: desktop) { return desktop }
         let current = desktops.first { window.spaceIDs.contains($0.systemID) }
         guard let displayID = Policy.preferredDisplay(for: rule, current: current?.displayID, displays: displays),
               let display = displays.first(where: { $0.id == displayID }) else { throw AppError.message("Unable to identify the destination display.") }
@@ -577,7 +569,11 @@ import ServiceManagement
         busy = true; lastError = nil; operationGeneration = generation
         defer { operationGeneration = nil; busy = false; lastOwnMovement = Date(); schedule(full: true); writeRuntimeStatus() }
         do { try await operation(); status = "Done" }
-        catch { fail(error) }
+        catch {
+            if error is CancellationError || locked || operationGeneration != generation {
+                status = locked ? "Mac is locked" : (state.enabled ? "Waiting for desktops to settle…" : "Automation paused")
+            } else { fail(error) }
+        }
     }
 
     func routeNew(_ incoming: [WindowInfo]) async {
@@ -601,8 +597,14 @@ import ServiceManagement
                     }
                     self.routingInbox.complete(confirmed.map(\.identity))
                     self.refresh(full: true)
+                    self.arrangeSharedDesktop(destination)
                 }
             } catch {
+                // A display/session change invalidates the in-flight operation,
+                // not the user's decision to keep automation enabled.
+                if error is CancellationError || self.locked || self.operationGeneration != self.generation {
+                    throw CancellationError()
+                }
                 self.pauseAutomation(after: error)
                 throw error
             }
@@ -640,14 +642,85 @@ import ServiceManagement
         throw error
     }
 
-    func assign(_ windowID: UInt32, to desktop: Desktop) {
+    func assign(_ windowID: UInt32, to desktop: Desktop, allowSharing: Bool = false) {
         guard let w = windows.first(where: { $0.id == windowID }), let key = w.group else { status = "Choose a Chrome profile first"; return }
+        if !allowSharing && hasOtherGroups(on: desktop, than: key) {
+            fail(AppError.message("This desktop already belongs to another app or profile. Use Share desktop to place them together.")); return
+        }
         Task { await runOperation {
             try await self.moveGroup(key, to: desktop, includeBorrowed: true)
             let confirmed = Set(self.windows.filter { $0.group == key && self.system.windowSpaces($0.id) == [desktop.systemID] }.map(\.identity))
             self.state.borrowedWindows?.removeAll { confirmed.contains($0.id) }
+            if allowSharing {
+                self.approveSharing(key, on: desktop)
+                for resident in self.windows where resident.group != key && self.borrowed(resident) == nil && self.system.windowSpaces(resident.id) == [desktop.systemID] {
+                    self.record(resident, on: desktop)
+                }
+            }
             self.record(w, on: desktop)
+            self.arrangeSharedDesktop(desktop)
         } }
+    }
+
+    func hasOtherGroups(on desktop: Desktop, than group: String) -> Bool {
+        state.assignments.contains { $0.desktopID == desktop.id && $0.id != group } ||
+        windows.contains { $0.spaceIDs == [desktop.systemID] && $0.group != nil && $0.group != group }
+    }
+
+    private func canKeepAssignment(_ group: String, on desktop: Desktop) -> Bool {
+        let residents = Set(state.assignments.filter { $0.desktopID == desktop.id }.map(\.id))
+        guard residents.count > 1 else { return true }
+        let approved = Set(state.sharedDesktopGroups?[desktop.id] ?? [])
+        if approved.contains(group) { return true }
+        if !approved.intersection(residents).isEmpty { return false }
+        // Old ambiguous collisions split deterministically, without using Space numbers.
+        return residents.sorted().first == group
+    }
+
+    private func approveSharing(_ group: String, on desktop: Desktop) {
+        let residents = state.assignments.filter { $0.desktopID == desktop.id }.map(\.id) +
+            windows.filter { system.windowSpaces($0.id) == [desktop.systemID] && borrowed($0) == nil }.compactMap(\.group)
+        if state.sharedDesktopGroups == nil { state.sharedDesktopGroups = [:] }
+        state.sharedDesktopGroups?[desktop.id] = Array(Set(residents + [group])).sorted()
+    }
+
+    func assignSavedGroup(_ group: String, to desktop: Desktop) {
+        guard let index = state.assignments.firstIndex(where: { $0.id == group }), !busy else { return }
+        approveSharing(group, on: desktop)
+        state.assignments[index].desktopID = desktop.id
+        state.assignments[index].displayID = desktop.displayID
+        state.assignments[index].ordinal = desktop.ordinal
+        save()
+    }
+
+    func arrangeSharedDesktop(_ desktop: Desktop) {
+        guard state.autoTileSharedWindows ?? true,
+              let display = displays.first(where: { $0.id == desktop.displayID }), !desktop.fullScreen else { return }
+        let visible = windows.filter {
+            !$0.minimized && $0.group != nil && system.windowSpaces($0.id) == [desktop.systemID]
+        }.sorted { $0.id < $1.id }
+        guard visible.count == 2, visible[0].group != visible[1].group else { return }
+        // Only a recorded home or an explicit summon authorizes sharing.
+        guard visible.allSatisfy({ window in
+            borrowed(window) != nil || state.assignments.contains { $0.id == window.group && $0.desktopID == desktop.id }
+        }) else { return }
+        let area = display.visibleFrame.insetBy(dx: 8, dy: 8)
+        let width = (area.width - 8) / 2
+        for (index, window) in visible.enumerated() {
+            let frame = CGRect(x: area.minX + CGFloat(index) * (width + 8), y: area.minY, width: width, height: area.height)
+            if !system.setFrame(frame, windowID: window.id) {
+                lastError = "The app did not allow automatic side-by-side placement. Its desktop assignment is unchanged."
+            }
+        }
+    }
+
+    func focusHoveredWindow(_ id: UInt32) {
+        guard state.focusFollowsMouse ?? true, trusted, !busy, !locked,
+              let window = windows.first(where: { $0.id == id && !$0.minimized }),
+              let spaces = system.windowSpaces(window.id), spaces.count == 1,
+              desktops.contains(where: { $0.systemID == spaces[0] && $0.active && !$0.fullScreen }),
+              system.focusedWindowID() != id, system.missionControlRoot() == nil else { return }
+        _ = system.focusWindow(id)
     }
 
     func organize() {
@@ -718,6 +791,10 @@ import ServiceManagement
                                     displayIDs: displays.map(\.id), assignments: rules, frames: frames, names: state.names)
         state.profiles.append(profile)
         if fallback { state.defaultProfileID = profile.id }
+        for (desktopID, shared) in Dictionary(grouping: rules, by: \.desktopID) where shared.count > 1 {
+            if state.sharedDesktopGroups == nil { state.sharedDesktopGroups = [:] }
+            state.sharedDesktopGroups?[desktopID] = shared.map(\.id)
+        }
         state.assignments = rules; activeProfileID = profile.id; save(); status = "Saved layout “\(profile.name)”"
     }
 
@@ -731,6 +808,11 @@ import ServiceManagement
         defer { restoring = false }
         let token = generation
         state.assignments = profile.assignments; state.names.merge(profile.names) { _, new in new }; temporaryTargets.removeAll()
+        // A saved layout is an explicit grouping choice, including when restored automatically.
+        for (desktopID, rules) in Dictionary(grouping: profile.assignments, by: \.desktopID) where rules.count > 1 {
+            if state.sharedDesktopGroups == nil { state.sharedDesktopGroups = [:] }
+            state.sharedDesktopGroups?[desktopID] = rules.map(\.id)
+        }
         if state.launchMissingApps {
             for rule in profile.assignments where !windows.contains(where: { $0.group == rule.id }) {
                 guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: rule.appID) else { continue }
@@ -745,7 +827,7 @@ import ServiceManagement
         var remap: [String: Desktop] = [:]
         var missing = 0
         for rule in profile.assignments {
-            guard !locked && token == generation else { throw AppError.message("Layout restoration was cancelled after a system change.") }
+            guard !locked && token == generation else { throw CancellationError() }
             guard let window = windows.first(where: { $0.group == rule.id && borrowed($0) == nil }) else {
                 if !windows.contains(where: { $0.group == rule.id }) { missing += 1 }
                 continue
@@ -753,6 +835,11 @@ import ServiceManagement
             let target: Desktop
             if let shared = remap[rule.desktopID] { target = shared }
             else { target = try await self.target(for: window); remap[rule.desktopID] = target }
+            let savedSharing = profile.assignments.filter { $0.desktopID == rule.desktopID }.map(\.id)
+            if savedSharing.count > 1 {
+                if state.sharedDesktopGroups == nil { state.sharedDesktopGroups = [:] }
+                state.sharedDesktopGroups?[target.id] = savedSharing
+            }
             try await moveGroup(rule.id, to: target)
             let homeMissing = !displays.contains { $0.id == rule.displayID }
             record(window, on: target, preserveHome: homeMissing)
@@ -780,8 +867,8 @@ import ServiceManagement
             guard let self, !self.locked else { return }
             self.oldDisplaySignature = ""
             self.refresh(full: true)
-            guard self.state.enabled, self.state.automaticProfiles else { self.status = "Displays updated"; return }
-            if let profile = Policy.profile(for: self.displays.map(\.id), state: self.state) {
+            guard self.state.enabled else { self.status = "Displays updated"; return }
+            if self.state.automaticProfiles, let profile = Policy.profile(for: self.displays.map(\.id), state: self.state) {
                 await self.runOperation { try await self.restoreProfile(profile) }
             } else {
                 self.enqueueOpenWindows()
@@ -828,7 +915,7 @@ import ServiceManagement
         if retained != saved { state.borrowedWindows = retained; save() }
     }
 
-    private func activeDestination() throws -> Desktop {
+    func activeDestination() throws -> Desktop {
         if let focused = system.focusedWindowID(), let spaces = system.windowSpaces(focused), spaces.count == 1,
            let desktop = desktops.first(where: { $0.systemID == spaces[0] && $0.active }) {
             guard !desktop.fullScreen else { throw AppError.message("Leave full screen before summoning a window.") }
@@ -845,12 +932,12 @@ import ServiceManagement
         return desktop
     }
 
-    func summon(_ desktop: Desktop) {
+    func summon(_ desktop: Desktop, destinationID: String? = nil) {
         do {
             let screens = system.screens()
             guard let spaces = system.spaces(displays: screens) else { throw AppError.message("Unable to read desktops.") }
             displays = screens; desktops = spaces
-            queue(.summon(source: desktop.id, destination: try activeDestination().id))
+            queue(.summon(source: desktop.id, destination: try destinationID ?? activeDestination().id))
         } catch { fail(error) }
     }
 
@@ -934,6 +1021,7 @@ import ServiceManagement
             self.rememberedWindow = window.id
             self.refresh(full: true)
             if !placed || !focused { throw AppError.message("Window moved, but the app did not accept its position or focus. Use Return home to send it back.") }
+            self.arrangeSharedDesktop(destination)
         }
     }
 

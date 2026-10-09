@@ -244,6 +244,23 @@ final class SystemAccess: SystemAccessProtocol {
         return screens().first { $0.frame.contains(point) }?.id
     }
 
+    func windowAtPointer() -> UInt32? {
+        let mouse = NSEvent.mouseLocation
+        let point = CGPoint(x: mouse.x, y: (NSScreen.screens.first?.frame.maxY ?? 0) - mouse.y)
+        guard let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
+        for row in rows {
+            guard (row[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1 > 0,
+                  let bounds = row[kCGWindowBounds as String] as? NSDictionary,
+                  let frame = CGRect(dictionaryRepresentation: bounds), frame.contains(point) else { continue }
+            // Menus, panels and other overlays block focus through them.
+            guard (row[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  let id = (row[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+                  elements[id] != nil else { return nil }
+            return id
+        }
+        return nil
+    }
+
     func processStarted(_ pid: Int32) -> Date? { NSRunningApplication(processIdentifier: pid)?.launchDate }
 
     func setMinimized(_ minimized: Bool, windowID: UInt32) -> Bool {

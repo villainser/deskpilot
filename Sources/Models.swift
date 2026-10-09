@@ -140,6 +140,9 @@ struct AppState: Codable {
     var chromeCatalogBookmark: Data?
     var chromeCatalogProfiles: [ChromeProfile]?
     var borrowedWindows: [BorrowedWindow]?
+    var autoTileSharedWindows: Bool?
+    var focusFollowsMouse: Bool?
+    var sharedDesktopGroups: [String: [String]]?
 }
 
 struct ChromeProfile: Identifiable, Equatable, Codable {
