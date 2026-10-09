@@ -53,6 +53,15 @@ final class Hotkeys {
     deinit { for ref in refs { UnregisterEventHotKey(ref) }; if let handler { RemoveEventHandler(handler) } }
 }
 
+final class QuickWorkspacePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+final class QuickWorkspaceHost: NSHostingView<QuickWorkspaceView> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var window: NSWindow!
     var item: NSStatusItem!
@@ -60,6 +69,7 @@ final class Hotkeys {
     let hotkeys = Hotkeys()
     var hoverFocus: HoverFocus?
     var quickPanel: NSPanel?
+    private var quickSession: UUID?
     private var showToken: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -94,7 +104,10 @@ final class Hotkeys {
         }
     }
 
-    func windowShouldClose(_ sender: NSWindow) -> Bool { sender.orderOut(nil); return false }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if sender === quickPanel { closeQuick() } else { sender.orderOut(nil) }
+        return false
+    }
     func applicationWillTerminate(_ notification: Notification) { hoverFocus?.stop() }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { show(); return true }
@@ -124,33 +137,45 @@ final class Hotkeys {
     @objc func toggle() { if window.isVisible && window.isKeyWindow { window.orderOut(nil) } else { show() } }
     @objc func pause() { engine.toggleEnabled() }
     @objc func quit() { NSApp.terminate(nil) }
+    private func closeQuick(session: UUID? = nil) {
+        if let session, quickSession != session { return }
+        quickPanel?.orderOut(nil); hoverFocus?.suspended = false; quickSession = nil
+    }
     @objc func showQuick() {
-        if quickPanel?.isVisible == true { quickPanel?.orderOut(nil); return }
+        if quickPanel?.isVisible == true { closeQuick(); return }
         engine.refresh(full: true)
         guard engine.trusted else { show(); return }
         do {
             let destination = try engine.activeDestination()
-            let previousApp = NSWorkspace.shared.frontmostApplication
+            let session = UUID(); quickSession = session
             if let id = engine.system.focusedWindowID() { engine.rememberedWindow = id }
             if quickPanel == nil {
-                let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 500), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+                let panel = QuickWorkspacePanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 560), styleMask: [.titled, .closable, .nonactivatingPanel], backing: .buffered, defer: false)
                 panel.title = "Bring a window here"
                 panel.isReleasedWhenClosed = false
-                panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+                panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+                panel.hidesOnDeactivate = false
+                panel.becomesKeyOnlyIfNeeded = false
                 panel.level = .floating
                 panel.delegate = self
                 quickPanel = panel
             }
-            quickPanel?.contentView = NSHostingView(rootView: QuickWorkspaceView(engine: engine, destination: destination,
-                summon: { [weak self] source in self?.quickPanel?.orderOut(nil); self?.engine.summon(source, destinationID: destination.id) },
-                sendBack: { [weak self] id in self?.quickPanel?.orderOut(nil); self?.engine.sendBack(id) },
-                cancel: { [weak self] in self?.quickPanel?.orderOut(nil); previousApp?.activate(options: []) }))
+            quickPanel?.contentView = QuickWorkspaceHost(rootView: QuickWorkspaceView(engine: engine, ui: QuickWorkspaceState(), destination: destination,
+                summon: { [weak self] source in
+                    guard let self else { return false }
+                    return await self.engine.summonNextWindow(from: source.id, to: destination.id)
+                },
+                sendBack: { [weak self] id in
+                    guard let self else { return false }
+                    return await self.engine.returnWindow(id)
+                },
+                close: { [weak self] in self?.closeQuick(session: session) }))
             let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
             if let frame = screen?.visibleFrame {
-                quickPanel?.setFrameOrigin(NSPoint(x: frame.midX - 220, y: frame.midY - 250))
+                quickPanel?.setFrameOrigin(NSPoint(x: frame.midX - 230, y: frame.midY - 280))
             }
+            hoverFocus?.suspended = true
             quickPanel?.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
         } catch { engine.fail(error); show() }
     }
     @objc func switchFromMenu(_ sender: NSMenuItem) {

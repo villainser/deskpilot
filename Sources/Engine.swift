@@ -365,6 +365,8 @@ import ServiceManagement
     func writeRuntimeStatus(onlyIfChanged: Bool = false) {
         let report: [String: Any] = ["pid": getpid(), "applicationPath": Bundle.main.bundleURL.path,
                                    "accessibility": trusted, "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
+                                   "windowDiscovery": system.windowDiscovery,
+                                   "busy": busy,
                                    "chromeProfiles": chromeProfiles.count,
                                    "chromeWindows": windows.filter { $0.appID == "com.google.Chrome" }.count,
                                    "recognizedChromeWindows": windows.filter { $0.appID == "com.google.Chrome" && $0.group != nil }.count,
@@ -561,18 +563,23 @@ import ServiceManagement
         throw AppError.message("macOS did not confirm desktop creation.")
     }
 
-    func runOperation(_ operation: () async throws -> Void) async {
+    @discardableResult func runOperation(_ operation: () async throws -> Void) async -> Bool {
         guard !busy && !locked && trusted && operational else {
             if !trusted { status = "Grant window management access" }
-            return
+            return false
         }
         busy = true; lastError = nil; operationGeneration = generation
         defer { operationGeneration = nil; busy = false; lastOwnMovement = Date(); schedule(full: true); writeRuntimeStatus() }
-        do { try await operation(); status = "Done" }
+        do {
+            try await operation()
+            status = lastError ?? "Done"
+            return lastError == nil
+        }
         catch {
             if error is CancellationError || locked || operationGeneration != generation {
                 status = locked ? "Mac is locked" : (state.enabled ? "Waiting for desktops to settle…" : "Automation paused")
             } else { fail(error) }
+            return false
         }
     }
 
@@ -943,6 +950,18 @@ import ServiceManagement
 
     func sendBack(_ windowID: UInt32) { queue(.sendBack(windowID)) }
 
+    func summonUnavailableReason(from source: Desktop, to destination: Desktop) -> String? {
+        if !trusted { return "Window access is required" }
+        if source.id == destination.id { return "You are here" }
+        let residents = windows.filter { $0.spaceIDs == [source.systemID] }
+        if residents.isEmpty { return "No accessible windows · try Refresh windows" }
+        if residents.allSatisfy({ borrowed($0) != nil }) { return "Windows already summoned" }
+        if !residents.contains(where: { $0.group != nil && borrowed($0) == nil }) {
+            return "Choose a Chrome profile in the main panel"
+        }
+        return nil
+    }
+
     private func queue(_ command: WindowCommand) {
         guard trusted, !locked else { status = "Grant window access and unlock the Mac first"; return }
         guard windowCommands.count < 20 else { status = "Please wait for queued window moves"; return }
@@ -966,8 +985,8 @@ import ServiceManagement
         }
     }
 
-    func summonNextWindow(from sourceID: String, to destinationID: String) async {
-        await runOperation {
+    @discardableResult func summonNextWindow(from sourceID: String, to destinationID: String) async -> Bool {
+        return await runOperation {
             self.refresh(full: true)
             try self.checkpoint()
             guard self.spaceSnapshotAvailable else { throw AppError.message("Unable to read current desktops. No window was moved.") }
@@ -1021,12 +1040,27 @@ import ServiceManagement
             self.rememberedWindow = window.id
             self.refresh(full: true)
             if !placed || !focused { throw AppError.message("Window moved, but the app did not accept its position or focus. Use Return home to send it back.") }
+            // App activation and WindowServer visibility settle asynchronously.
+            // A successful move request alone does not mean the user can see it.
+            try await self.confirmSummonedWindow(window.id, on: destination)
             self.arrangeSharedDesktop(destination)
         }
     }
 
-    func returnWindow(_ windowID: UInt32) async {
-        await runOperation {
+    private func confirmSummonedWindow(_ id: UInt32, on destination: Desktop) async throws {
+        for attempt in 0..<9 {
+            try checkpoint()
+            guard system.spaces(displays: displays)?.contains(where: { $0.id == destination.id && $0.active }) == true else {
+                throw AppError.message("The active desktop changed while focusing the window. Its return location is saved. Go back to the destination and try again.")
+            }
+            if system.windowSpaces(id) == [destination.systemID], system.isWindowVisible(id), system.focusedWindowID() == id { return }
+            if attempt < 8 { try await Task.sleep(nanoseconds: 125_000_000) }
+        }
+        throw AppError.message("The window moved, but is not visible or focused on this desktop. Its return location is saved; use Return home to undo the move.")
+    }
+
+    @discardableResult func returnWindow(_ windowID: UInt32) async -> Bool {
+        return await runOperation {
             self.refresh(full: true)
             try self.checkpoint()
             guard self.spaceSnapshotAvailable else { throw AppError.message("Unable to read current desktops. No window was moved.") }

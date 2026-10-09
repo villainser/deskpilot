@@ -65,7 +65,7 @@ Desktop shortcut numbers are unique across all displays, following the display l
 
 ## Summon and return
 
-Focus a window on the display where you want to work, then press **Control-Space**. Click a source desktop or press its number. The destination is captured when the picker opens. **Control–Option–Command–N** remains available as a direct advanced shortcut, where N is the source desktop number. Each press brings one more window; rapid presses queue in order. The first choice is the most recently focused eligible window, then the remaining windows. If multiple apps or Chrome profiles share the source desktop, their windows participate in the same sequence. Unknown Chrome profiles, fullscreen windows and windows on all Spaces are excluded. Once the source is empty, DeskPilot says there are no more windows instead of cycling windows back unexpectedly.
+Focus a window on the display where you want to work, then press **Control-Space**. Click a source desktop or press its number. The picker shows its captured destination and accepts the first click without activating DeskPilot or switching to its desktop. It stays open while moving a window, closes after a confirmed result, and displays failures in place. Disabled desktops explain whether they are the current destination, have no accessible windows, or need a Chrome profile choice. Refresh windows retries discovery. **Control–Option–Command–N** remains available as a direct advanced shortcut, where N is the source desktop number. Each press brings one more window; rapid presses queue in order. The first choice is the most recently focused eligible window, then the remaining windows. If multiple apps or Chrome profiles share the source desktop, their windows participate in the same sequence. Unknown Chrome profiles, fullscreen windows and windows on all Spaces are excluded. Once the source is empty, DeskPilot says there are no more windows instead of cycling windows back unexpectedly.
 
 Two eligible windows from different apps or profiles are arranged side by side automatically when their shared destination is explicitly authorized. **Control–Option–Left / Right** remains available for manual placement. Focus any summoned window and press **Control–Option–Command–Delete** to return just that window. It restores the original size and minimized state without switching to the home desktop. A returned window becomes available for another summon. The panel provides **Summon next**, a list of **Summoned windows**, and individual **Return home** buttons.
 
@@ -73,7 +73,7 @@ The destination is the active desktop containing the focused window. With no foc
 
 Temporary moves are recorded before movement and survive restarting DeskPilot. Records contain window/process identifiers, the app's start time, the home Space identity and geometry; they do not store window titles. Closed windows and restarted apps lose their old records. Automation, Organize now and layout restoration exclude summoned windows; saving a layout keeps their home assignments and original geometry. **Move to** is an explicit permanent assignment for the whole app/profile and clears its temporary records after a successful move. An occupied destination is labeled **Share**. The permanent-assignment keyboard shortcut refuses an occupied destination and directs you to the explicit sharing control.
 
-If the home desktop disappears, return stops with an explanation. It never substitutes another desktop with the same number. Reconnect the display or choose a new permanent home. If the original Space moves to another monitor, return follows its identity. Display changes and locking cancel queued commands. Movement, geometry and focus failures remain visible; a partial return retains its record so **Return home** can retry.
+If the home desktop disappears, return stops with an explanation. It never substitutes another desktop with the same number. Reconnect the display or choose a new permanent home. If the original Space moves to another monitor, return follows its identity. Display changes and locking cancel queued commands. Movement, geometry and focus failures remain visible; a partial return retains its record so **Return home** can retry. Summon checks the actual focused window and WindowServer visibility on the active destination before reporting success, with a bounded settling period. An accepted move request by itself is insufficient.
 
 ## Assignment and focus behavior
 
@@ -99,7 +99,7 @@ DeskPilot retains only profile names and directory identifiers already read with
 
 The app includes Apple's [other-application-data purpose message](https://developer.apple.com/documentation/bundleresources/information-property-list/nsappdatausagedescription) to explain its use of profile metadata when macOS asks for access. The purpose message does not grant access or repair a permission invalidated by a changed code signature.
 
-**Refresh and check access** updates the local runtime report with counts, file-read status and event types, without page titles or URLs. Completed operations and automation toggles also write their result, pause reason and last detected Mission Control host. Meaningful changes in the routing queue, readable windows and Mission Control waiting state update the report automatically. Counter changes alone do not trigger disk writes. Activating DeskPilot's own panel is excluded from managed-window events.
+**Refresh and check access** updates the local runtime report with counts, file-read status and event types, without page titles or URLs. Per-app discovery counters report native window-read errors, missing IDs, rejected nonstandard windows and accepted window counts. Completed operations and automation toggles also write their result, pause reason and last detected Mission Control host. Meaningful changes in the routing queue, readable windows and Mission Control waiting state update the report automatically. Counter changes alone do not trigger disk writes. Activating DeskPilot's own panel is excluded from managed-window events.
 
 ## Reliability and privacy
 
@@ -113,7 +113,7 @@ The app includes Apple's [other-application-data purpose message](https://develo
 
 ## Verification and limitations
 
-Version 0.3.2 is a development build. See [VERIFICATION.json](VERIFICATION.json) for the exact checks and remaining manual tests.
+Version 0.3.3 is a development build. See [VERIFICATION.json](VERIFICATION.json) for the exact checks and remaining manual tests.
 
 The local suite includes policy tests and tests of the real routing engine against a simulated desktop service. It covers desktop creation, app and Chrome grouping, late metadata, busy queues, failure recovery and automatic/custom names. These tests do not substitute for a live multi-display test.
 

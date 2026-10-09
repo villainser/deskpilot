@@ -1,15 +1,15 @@
 {
-  "version": "0.3.2",
+  "version": "0.3.3",
   "date": "2026-10-09",
   "platform": "macOS 27.0.1 / Apple Silicon",
   "build": "passed",
   "coreChecks": {
     "passed": 62,
     "failed": 0,
-    "lastRunVersion": "0.3.1"
+    "lastRunVersion": "0.3.3"
   },
   "engineChecks": {
-    "passed": 94,
+    "passed": 100,
     "failed": 0,
     "environment": "Actual routing engine with an injected simulated desktop service and synthetic Chrome profile catalog. No live application windows or user settings are accessed.",
     "coverage": [
@@ -47,9 +47,13 @@
       "Saving and restoring a shared layout preserves grouping regardless of group order",
       "Exactly two eligible shared or summoned windows occupy separate display halves",
       "Returning an automatically tiled summoned window restores its original home and geometry",
-      "Hover focus accepts active desktop windows, rejects inactive destinations and respects busy/disabled states"
+      "Hover focus accepts active desktop windows, rejects inactive destinations and respects busy/disabled states",
+      "A move and focus request that leave the window invisible fail with return data intact",
+      "Picker actions receive an explicit success/failure result",
+      "Disabled sources explain current destination, no accessible windows or unknown Chrome profile",
+      "A confirmed visible focused summon succeeds and a confirmed return clears its record"
     ],
-    "lastRunVersion": "0.3.1"
+    "lastRunVersion": "0.3.3"
   },
   "regressionsReproduced": [
     {
@@ -59,14 +63,16 @@
     {
       "before": "Display changes discarded pending routing when automatic layout restoration was disabled.",
       "after": "Open windows are queued again after displays settle."
+    },
+    {
+      "before": "An accepted move/focus request was treated as success even when the window remained invisible.",
+      "after": "The operation checks actual visibility and focus on the active destination and reports failure while preserving Return home."
     }
   ],
   "guiCheck": {
-    "result": "The previous 0.3.1 GUI was closed with Quit DeskPilot. The 0.3.2 application launched and wrote its version and application path to runtime-status.json.",
-    "scope": "Launch confirmed from the application runtime report; the new shortcut was not tested live.",
-    "permission": "The rebuilt 0.3.2 copy reported window management access as false.",
-    "blocker": "Native UI connection closed while opening 0.3.2: Sky Computer Use native pipe closed before response.",
-    "automationEnabledForTest": "Existing enabled preference retained; access was unavailable."
+    "result": "The user supplied a 0.3.2 picker screenshot and reported that clicking an enabled action did not bring a window. The 0.3.2 runtime confirmed access granted and reported no movement error. The exact live failure mechanism remains unresolved.",
+    "scope": "Version 0.3.3 was compiled and packaged; it has not been launched or visually verified.",
+    "blocker": "Native UI inspection subsequently failed with a closed pipe and a timeout. No alternate UI-control mechanism was used."
   },
   "bundleValidation": {
     "infoPlist": "passed",
@@ -83,11 +89,11 @@
     "codeSignature": "passed"
   },
   "notYetVerified": [
-    "Live automatic desktop creation and routing in this packaged version",
-    "Live Chrome profile recognition and permissions after upgrading",
-    "Live Control-Space registration, picker selection, summon and return",
-    "Live pointer dwell, first-click interaction and side-by-side placement",
-    "External-display disconnect/reconnect and full layout restoration",
+    "Live click and number-key actions in the nonactivating 0.3.3 picker",
+    "Live summon, visibility/focus verification and return in the packaged version",
+    "The specific cause of missing windows in the user screenshot; per-app discovery counters were added to identify it",
+    "Chrome profile recognition and automatic routing after upgrading",
+    "External-display disconnect/reconnect and layout restoration",
     "Idle and active CPU/RAM benchmarks"
   ],
   "resourceBehavior": "Routing is event-based. Pointer focus uses mouse-move events and one pending dwell check, with no repeating idle timer or screenshots. Mission Control name overlays are not started and their polling is disabled. These implementation properties are not a CPU/RAM benchmark.",
@@ -114,7 +120,7 @@
   "summonAndReturn": {
     "environment": "Actual engine with synthetic windows and an injected desktop service",
     "persistence": "Per-window original Space, relative frame, minimized state, app identity and process start time are written before movement. No titles are added to temporary-return records.",
-    "liveVerification": "Pending for 0.3.2"
+    "liveVerification": "Pending for 0.3.3"
   },
   "historicalLiveEvidence": [
     {
@@ -141,7 +147,13 @@
     "command": "Quick summon and return picker",
     "previous": "Option-Space",
     "current": "Control-Space",
-    "validation": "Carbon registration uses space key code 49 with controlKey; interface and README match. No routing logic changed.",
+    "validation": "Control-Space remains registered. The picker now uses a nonactivating panel, first-click acceptance and visible action feedback.",
     "liveVerification": "Pending; a system-wide registration conflict remains possible and is reported by the app."
+  },
+  "pickerImplementation": {
+    "activation": "NSPanel with nonactivatingPanel and canJoinAllSpaces; opening it does not call NSApp.activate.",
+    "feedback": "The first click is accepted; operations show progress and remain open on failure. Success closes only the originating picker session.",
+    "hover": "Pointer focus is suspended while the picker is open.",
+    "reference": "https://developer.apple.com/documentation/appkit/nswindow/stylemask-swift.struct/nonactivatingpanel"
   }
 }

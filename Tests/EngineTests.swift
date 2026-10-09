@@ -20,6 +20,7 @@ final class TestSystem: SystemAccessProtocol {
     var failedSpaceReads = 0
     var onBeginMove: (() -> Void)?
     var focused: UInt32?
+    var invisibleWindows = Set<UInt32>()
     var pointerDisplay: String? = "screen"
     var launchDate = Date(timeIntervalSince1970: 100)
     var extraDisplays: [Display] = []
@@ -37,6 +38,9 @@ final class TestSystem: SystemAccessProtocol {
     func pointerDisplayID() -> String? { pointerDisplay }
     func processStarted(_ pid: Int32) -> Date? { launchDate }
     func focusWindow(_ windowID: UInt32) -> Bool { focused = windowID; return true }
+    func isWindowVisible(_ windowID: UInt32) -> Bool {
+        !invisibleWindows.contains(windowID) && desktops.contains { $0.active && windowSpaces(windowID) == [$0.systemID] }
+    }
     func setMinimized(_ minimized: Bool, windowID: UInt32) -> Bool { minimizedWrites[windowID] = minimized; return true }
     func missionControlRoot() -> AXUIElement? { nil }
     @MainActor func missionControl(display: Display, select: Desktop?, create: Bool) async throws {
@@ -542,6 +546,30 @@ final class TestSystem: SystemAccessProtocol {
         check(minimizedSystem.minimizedWrites[270] == false && minimizedSystem.focused == 270, "Summon unminimizes and focuses the chosen window")
         await minimizedLoan.returnWindow(270)
         check(minimizedSystem.minimizedWrites[270] == true && minimizedLoan.state.borrowedWindows?.isEmpty == true, "Return restores the original minimized state")
+
+        let invisibleSystem = TestSystem(); invisibleSystem.windows = [window(280, space: 2)]
+        invisibleSystem.invisibleWindows.insert(280)
+        let invisibleLoan = make(invisibleSystem); invisibleLoan.state.enabled = false
+        let hiddenResult = await invisibleLoan.summonNextWindow(from: "existing-empty", to: "home")
+        check(!hiddenResult && invisibleLoan.lastError?.contains("not visible") == true && invisibleLoan.state.borrowedWindows?.count == 1,
+              "A reported move and focus cannot claim success when the summoned window is not visible")
+        let returnResult = await invisibleLoan.returnWindow(280)
+        check(returnResult && invisibleLoan.state.borrowedWindows?.isEmpty == true,
+              "The picker may close after an explicitly confirmed return")
+
+        let pickerSystem = TestSystem(); pickerSystem.windows = [window(290, space: 2)]
+        let picker = make(pickerSystem); picker.state.enabled = false
+        check(picker.summonUnavailableReason(from: pickerSystem.desktops[0], to: pickerSystem.desktops[0]) == "You are here",
+              "The destination row explains why it cannot summon itself")
+        check(picker.summonUnavailableReason(from: pickerSystem.desktops[1], to: pickerSystem.desktops[0]) == nil,
+              "An accessible source remains enabled in the picker")
+        let movedResult = await picker.summonNextWindow(from: "existing-empty", to: "home")
+        check(movedResult && picker.summonUnavailableReason(from: pickerSystem.desktops[1], to: pickerSystem.desktops[0])?.contains("No accessible") == true,
+              "The picker closes only after a visible focused summon and explains an emptied source")
+        pickerSystem.windows = [window(291, app: "com.google.Chrome", title: "Guest - Google Chrome - Guest", space: 2)]
+        picker.refresh(full: true)
+        check(picker.summonUnavailableReason(from: pickerSystem.desktops[1], to: pickerSystem.desktops[0])?.contains("Choose a Chrome profile") == true,
+              "An unknown Chrome profile has an actionable disabled-row explanation")
 
         print("PASS: \(checks) engine checks")
     }

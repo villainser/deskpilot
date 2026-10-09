@@ -2,6 +2,7 @@ import AppKit
 
 // Mouse-driven and throttled: no repeating idle timer or screen capture.
 @MainActor final class HoverFocus {
+    var suspended = false
     private weak var engine: Engine?
     private var monitor: Any?
     private var pending: DispatchWorkItem?
@@ -23,7 +24,7 @@ import AppKit
     }
 
     private func moved() {
-        guard let engine, !engine.busy, !engine.locked, !(NSApp.isActive && NSApp.keyWindow?.isVisible == true),
+        guard !suspended, let engine, !engine.busy, !engine.locked, !(NSApp.isActive && NSApp.keyWindow?.isVisible == true),
               NSEvent.pressedMouseButtons == 0,
               NSEvent.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else {
             pending?.cancel(); pending = nil; return
@@ -36,6 +37,7 @@ import AppKit
         let job = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.pending = nil
+            guard !self.suspended else { return }
             let quiet = ProcessInfo.processInfo.systemUptime - self.lastMovement
             if quiet < 0.2 { self.schedule(after: 0.2 - quiet); return }
             guard let engine = self.engine, let access = engine.system as? SystemAccess,

@@ -14,6 +14,7 @@ protocol SystemAccessProtocol: AnyObject {
     var canMove: Bool { get }
     var lastReadMilliseconds: Double { get }
     var missionControlHost: String? { get }
+    var windowDiscovery: [String: [String: Int]] { get }
     func start()
     func screens() -> [Display]
     func spaces(displays: [Display]) -> [Desktop]?
@@ -23,6 +24,7 @@ protocol SystemAccessProtocol: AnyObject {
     func pointerDisplayID() -> String?
     func processStarted(_ pid: Int32) -> Date?
     func focusWindow(_ windowID: UInt32) -> Bool
+    func isWindowVisible(_ windowID: UInt32) -> Bool
     func setMinimized(_ minimized: Bool, windowID: UInt32) -> Bool
     func missionControlRoot() -> AXUIElement?
     @MainActor func missionControl(display: Display, select: Desktop?, create: Bool) async throws
@@ -34,6 +36,7 @@ protocol SystemAccessProtocol: AnyObject {
 
 extension SystemAccessProtocol {
     var missionControlHost: String? { nil }
+    var windowDiscovery: [String: [String: Int]] { [:] }
 }
 
 final class SystemAccess: SystemAccessProtocol {
@@ -46,6 +49,7 @@ final class SystemAccess: SystemAccessProtocol {
     var readCount = 0
     var lastReadMilliseconds = 0.0
     private(set) var missionControlHost: String?
+    private(set) var windowDiscovery: [String: [String: Int]] = [:]
 
     var trusted: Bool { AXIsProcessTrusted() }
     var canMove: Bool { DPCanMove() }
@@ -142,21 +146,39 @@ final class SystemAccess: SystemAccessProtocol {
         attachObservers()
         let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular && $0.processIdentifier != getpid() }
         let running = Set(apps.map(\.processIdentifier))
+        let appIDs = Set(apps.map { $0.bundleIdentifier ?? "pid:\($0.processIdentifier)" })
+        windowDiscovery = windowDiscovery.filter { appIDs.contains($0.key) }
         for pid in Array(cache.keys) where !running.contains(pid) { remove(pid) }
         for app in apps where dirty == nil || dirty!.contains(app.processIdentifier) || cache[app.processIdentifier] == nil {
             let pid = app.processIdentifier, root = AXUIElementCreateApplication(app.processIdentifier)
             AXUIElementSetMessagingTimeout(root, 0.3)
+            let appID = app.bundleIdentifier ?? "pid:\(pid)"
+            var readError: AXError = .success
+            func read(_ element: AXUIElement) -> [AXUIElement]? {
+                var value: CFTypeRef?
+                readError = AXUIElementCopyAttributeValue(element, kAXWindowsAttribute as CFString, &value)
+                return readError == .success ? value as? [AXUIElement] : nil
+            }
             let appWindows: [AXUIElement]?
             if app.bundleIdentifier == "com.google.Chrome" {
                 appWindows = ChromeAccessibility.windows(application: root,
                     role: { ax($0, kAXRoleAttribute) as? String },
-                    read: { ax($0, kAXWindowsAttribute) as? [AXUIElement] })
-            } else { appWindows = ax(root, kAXWindowsAttribute) as? [AXUIElement] }
-            guard let windows = appWindows else { continue }
+                    read: read)
+            } else {
+                // Electron applications also lazily initialize native accessibility.
+                _ = ax(root, kAXRoleAttribute)
+                appWindows = read(root)
+            }
+            var diagnostic = ["readError": Int(readError.rawValue), "reportedWindows": appWindows?.count ?? -1,
+                              "missingNativeID": 0, "nonStandardWindows": 0, "acceptedWindows": 0]
+            guard let windows = appWindows else { windowDiscovery[appID] = diagnostic; continue }
             var records: [WindowInfo] = []
             for window in windows {
                 let id = DPWindowID(window)
-                guard id > 0, ax(window, kAXSubroleAttribute) as? String == kAXStandardWindowSubrole else { continue }
+                guard id > 0 else { diagnostic["missingNativeID", default: 0] += 1; continue }
+                guard ax(window, kAXSubroleAttribute) as? String == kAXStandardWindowSubrole else {
+                    diagnostic["nonStandardWindows", default: 0] += 1; continue
+                }
                 elements[id] = window
                 var point = CGPoint.zero, size = CGSize.zero
                 if let value = ax(window, kAXPositionAttribute), CFGetTypeID(value) == AXValueGetTypeID() { AXValueGetValue(value as! AXValue, .cgPoint, &point) }
@@ -168,6 +190,7 @@ final class SystemAccess: SystemAccessProtocol {
                                           minimized: ax(window, kAXMinimizedAttribute) as? Bool ?? false)
                 if record.appID == "com.google.Chrome" { record.accessibilityTitles = chromeWindowTitles(window) }
                 records.append(record)
+                diagnostic["acceptedWindows", default: 0] += 1
                 let identity = "\(pid):\(id)"
                 if !observedWindows.contains(identity), let observer = observers[pid] {
                     for name in [kAXMovedNotification, kAXResizedNotification, kAXTitleChangedNotification, kAXUIElementDestroyedNotification, kAXWindowMiniaturizedNotification, kAXWindowDeminiaturizedNotification] {
@@ -187,6 +210,8 @@ final class SystemAccess: SystemAccessProtocol {
                 } else { elements[old.id] = nil; observedWindows.remove("\(pid):\(old.id)") }
             }
             cache[pid] = records
+            diagnostic["cachedWindows"] = records.count
+            windowDiscovery[appID] = diagnostic
         }
         lastReadMilliseconds = (ProcessInfo.processInfo.systemUptime - began) * 1000
         return cache.values.flatMap { $0 }.sorted { $0.id < $1.id }
@@ -272,9 +297,21 @@ final class SystemAccess: SystemAccessProtocol {
         guard let element = elements[windowID] else { return false }
         var pid: pid_t = 0
         guard AXUIElementGetPid(element, &pid) == .success, let app = NSRunningApplication(processIdentifier: pid) else { return false }
+        let root = AXUIElementCreateApplication(pid)
         _ = AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
+        _ = AXUIElementSetAttributeValue(root, kAXFocusedWindowAttribute as CFString, element)
+        if app.isHidden { app.unhide() }
+        let activated = app.activate(options: [])
+        _ = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         let raised = AXUIElementPerformAction(element, kAXRaiseAction as CFString) == .success
-        return app.activate(options: []) && raised
+        return activated && raised
+    }
+
+    func isWindowVisible(_ windowID: UInt32) -> Bool {
+        guard let rows = CGWindowListCopyWindowInfo(.optionIncludingWindow, windowID) as? [[String: Any]],
+              let row = rows.first(where: { ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowID }) else { return false }
+        return (row[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true
+            && ((row[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0
     }
 
     func find(_ id: String, below root: AXUIElement, depth: Int = 0) -> AXUIElement? {
