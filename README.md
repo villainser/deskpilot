@@ -99,7 +99,7 @@ DeskPilot retains only profile names and directory identifiers already read with
 
 The app includes Apple's [other-application-data purpose message](https://developer.apple.com/documentation/bundleresources/information-property-list/nsappdatausagedescription) to explain its use of profile metadata when macOS asks for access. The purpose message does not grant access or repair a permission invalidated by a changed code signature.
 
-**Refresh and check access** updates the local runtime report with counts, file-read status and event types, without page titles or URLs. Per-app discovery counters report native window-read errors, missing IDs, rejected nonstandard windows and accepted window counts. Completed operations and automation toggles also write their result, pause reason and last detected Mission Control host. Meaningful changes in the routing queue, readable windows and Mission Control waiting state update the report automatically. Counter changes alone do not trigger disk writes. Activating DeskPilot's own panel is excluded from managed-window events.
+**Refresh and check access** updates the local runtime report with counts, file-read status and event types, without page titles or URLs. Per-app discovery counters report native window-read errors, missing IDs, rejected nonstandard windows and accepted window counts. The last window-operation results distinguish position, resize and activation failures; they add no window titles or page contents. Completed operations and automation toggles also write their result, pause reason and last detected Mission Control host. Meaningful changes in the routing queue, readable windows and Mission Control waiting state update the report automatically. Counter changes alone do not trigger disk writes. Activating DeskPilot's own panel is excluded from managed-window events.
 
 ## Reliability and privacy
 
@@ -113,7 +113,7 @@ The app includes Apple's [other-application-data purpose message](https://develo
 
 ## Verification and limitations
 
-Version 0.3.4 is a development build. See [VERIFICATION.json](VERIFICATION.json) for the exact checks and remaining manual tests.
+Version 0.3.5 is a development build. See [VERIFICATION.json](VERIFICATION.json) for the exact checks and remaining manual tests.
 
 The local suite includes policy tests and tests of the real routing engine against a simulated desktop service. It covers desktop creation, app and Chrome grouping, late metadata, busy queues, failure recovery and automatic/custom names. These tests do not substitute for a live multi-display test.
 

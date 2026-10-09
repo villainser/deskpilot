@@ -366,6 +366,7 @@ import ServiceManagement
         let report: [String: Any] = ["pid": getpid(), "applicationPath": Bundle.main.bundleURL.path,
                                    "accessibility": trusted, "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
                                    "windowDiscovery": system.windowDiscovery,
+                                   "windowInteraction": system.windowInteraction,
                                    "busy": busy,
                                    "chromeProfiles": chromeProfiles.count,
                                    "chromeWindows": windows.filter { $0.appID == "com.google.Chrome" }.count,
@@ -390,7 +391,7 @@ import ServiceManagement
                                    "checkedAt": ISO8601DateFormatter().string(from: Date())]
         // Event counters and timing alone must not cause a disk write on every
         // move or resize. Record meaningful routing changes and explicit checks.
-        let volatile: Set<String> = ["checkedAt", "reads", "eventCounts", "chromeCatalogReadAttempts"]
+        let volatile: Set<String> = ["checkedAt", "reads", "eventCounts", "chromeCatalogReadAttempts", "windowInteraction"]
         let stable = report.filter { !volatile.contains($0.key) }
         let snapshot = try? JSONSerialization.data(withJSONObject: stable, options: .sortedKeys)
         if onlyIfChanged && snapshot == lastRuntimeSnapshot { return }

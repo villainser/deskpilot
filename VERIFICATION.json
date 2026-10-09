@@ -1,12 +1,12 @@
 {
-  "version": "0.3.4",
+  "version": "0.3.5",
   "date": "2026-10-09",
   "platform": "macOS 27.0.1 / Apple Silicon",
   "build": "passed",
   "coreChecks": {
     "passed": 62,
     "failed": 0,
-    "lastRunVersion": "0.3.4"
+    "lastRunVersion": "0.3.5"
   },
   "engineChecks": {
     "passed": 109,
@@ -56,7 +56,7 @@
       "Invalid or absent processes do not receive an invented identity; unknown identity prevents movement without creating return data",
       "Summon and return after a DeskPilot restart work with the native fallback identity"
     ],
-    "lastRunVersion": "0.3.4"
+    "lastRunVersion": "0.3.5"
   },
   "regressionsReproduced": [
     {
@@ -74,12 +74,17 @@
     {
       "before": "Finder had no NSRunningApplication.launchDate on the test Mac. Summon aborted before any move with an app-or-display identification error despite granted window access.",
       "after": "Process identity preserves the LaunchServices timestamp when available and falls back to the kernel process start time otherwise. Missing process identity and unavailable displays have separate errors."
+    },
+    {
+      "before": "With Finder frontmost, opening the nonactivating picker and summoning Terminal moved its window but NSRunningApplication.activate returned false. All AX position, size, main-window, focused-window and raise requests succeeded; Finder stayed frontmost.",
+      "after": "The window owner is activated through AXFrontmost using the existing Accessibility grant. The same background-picker scenario completed, with the target window visible, focused and on the active destination."
     }
   ],
   "guiCheck": {
-    "result": "The running 0.3.3 app had window access and reported an app-or-display identification failure. A read-only process probe confirmed Finder had no LaunchServices launch date. The compiled 0.3.4 native code supplied a stable kernel start time for the same running Finder, retained the LaunchServices date for System Settings, and matched the existing saved return record.",
-    "scope": "The process identity failure is reproduced and the corrected native lookup is verified against running processes. The 0.3.4 bundle has been built and packaged; GUI summon and return are not yet verified.",
-    "blocker": "Native UI inspection failed with a closed pipe. No alternate UI-control mechanism was used."
+    "result": "Passed live summon and return through picker buttons for Safari and Terminal, plus Control-Space followed by a desktop number. The app was running in the background for the regression check. The picker closed on success and reported no movement error.",
+    "scope": "Packaged 0.3.5 on one built-in display with existing regular macOS desktops. Native UI automation drove the actual picker; independent native reads checked WindowServer visibility, Space membership, the frontmost application and focused window.",
+    "return": "Both tested windows returned to their original Space. The active destination Space stayed unchanged and temporary records for those windows were removed.",
+    "permissions": "The existing DeskPilot permission entry was reconnected to the tested build through System Settings. The app reported granted access and was left running."
   },
   "bundleValidation": {
     "infoPlist": "passed",
@@ -96,16 +101,14 @@
     "codeSignature": "passed"
   },
   "notYetVerified": [
-    "Live click and number-key actions in the nonactivating 0.3.4 picker",
-    "Live summon, visibility/focus verification and return in the packaged version",
-    "The specific cause of missing windows in the user screenshot; per-app discovery counters were added to identify it",
+    "All application types and native window discovery on unvisited desktops",
     "Chrome profile recognition and automatic routing after upgrading",
     "External-display disconnect/reconnect and layout restoration",
     "Idle and active CPU/RAM benchmarks"
   ],
   "resourceBehavior": "Routing is event-based. Pointer focus uses mouse-move events and one pending dwell check, with no repeating idle timer or screenshots. Mission Control name overlays are not started and their polling is disabled. These implementation properties are not a CPU/RAM benchmark.",
   "namingScope": "Labels in the DeskPilot panel and menu only. Mission Control naming and transparency experiments are deferred; Apple labels remain unchanged.",
-  "codeSigning": "Ad hoc development signature; no valid code-signing identity was available. Rebuilding can invalidate macOS privacy grants. DESKPILOT_SIGNING_IDENTITY accepts an existing stable identity. No privacy settings, certificates or SIP configuration were changed.",
+  "codeSigning": "Ad hoc development signature; no valid code-signing identity was available. Rebuilding can invalidate macOS privacy grants. The existing DeskPilot access entry was reconnected to the tested bundle through System Settings. No certificates or SIP configuration were changed. DESKPILOT_SIGNING_IDENTITY accepts an existing stable identity.",
   "chromeCatalogChecks": {
     "passed": true,
     "coverage": [
@@ -127,7 +130,7 @@
   "summonAndReturn": {
     "environment": "Actual engine with synthetic windows and an injected desktop service",
     "persistence": "Per-window original Space, relative frame, minimized state, app identity and process start time are written before movement. No titles are added to temporary-return records.",
-    "liveVerification": "Process identity verified against running Finder and System Settings; actual GUI summon and return pending for 0.3.4."
+    "liveVerification": "Passed in packaged 0.3.5 for Safari and Terminal: successive picker actions, visibility and focus on the active destination, individual returns, and Control-Space with a number key."
   },
   "historicalLiveEvidence": [
     {
@@ -154,8 +157,8 @@
     "command": "Quick summon and return picker",
     "previous": "Option-Space",
     "current": "Control-Space",
-    "validation": "Control-Space remains registered. The picker now uses a nonactivating panel, first-click acceptance and visible action feedback.",
-    "liveVerification": "Pending; a system-wide registration conflict remains possible and is reported by the app."
+    "validation": "Control-Space remains registered. Picker buttons and number keys dispatch the same summon operation.",
+    "liveVerification": "Passed Control-Space followed by 2 while another application was frontmost; Safari moved to the captured destination, became visible and frontmost, and returned through its picker action."
   },
   "pickerImplementation": {
     "activation": "NSPanel with nonactivatingPanel and canJoinAllSpaces; opening it does not call NSApp.activate.",
@@ -168,5 +171,15 @@
     "fallback": "proc_pidinfo with PROC_PIDTBSDINFO, including start-time microseconds; rejects invalid PIDs, incomplete responses and invalid timestamps.",
     "verification": "The native regression fixture has no LaunchServices date. The real Finder also lacked it and received the expected stable kernel date. Existing System Settings return data remained valid.",
     "scope": "Read-only metadata lookup. No additional privacy grant, background timer or SIP change."
+  },
+  "backgroundActivation": {
+    "reproducer": [
+      "Put Terminal on one regular desktop and focus Finder on another.",
+      "Open the picker with Control-Space and select the Terminal desktop.",
+      "Compare actual Space membership, visibility, focused window and frontmost application."
+    ],
+    "before": "0.3.4 movement, resize, position and AXRaise succeeded, but the LaunchServices activation request was rejected and Finder remained frontmost.",
+    "after": "0.3.5 AXFrontmost returned success, the target application became frontmost and its moved window was focused and visible on the captured destination.",
+    "diagnostics": "The runtime report includes the most recent frame and focus result codes and window IDs. No titles or page contents are added. Diagnostic changes alone do not trigger disk writes."
   }
 }

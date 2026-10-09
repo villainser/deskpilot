@@ -15,6 +15,7 @@ protocol SystemAccessProtocol: AnyObject {
     var lastReadMilliseconds: Double { get }
     var missionControlHost: String? { get }
     var windowDiscovery: [String: [String: Int]] { get }
+    var windowInteraction: [String: [String: Int]] { get }
     func start()
     func screens() -> [Display]
     func spaces(displays: [Display]) -> [Desktop]?
@@ -37,6 +38,7 @@ protocol SystemAccessProtocol: AnyObject {
 extension SystemAccessProtocol {
     var missionControlHost: String? { nil }
     var windowDiscovery: [String: [String: Int]] { [:] }
+    var windowInteraction: [String: [String: Int]] { [:] }
 }
 
 final class SystemAccess: SystemAccessProtocol {
@@ -50,6 +52,7 @@ final class SystemAccess: SystemAccessProtocol {
     var lastReadMilliseconds = 0.0
     private(set) var missionControlHost: String?
     private(set) var windowDiscovery: [String: [String: Int]] = [:]
+    private(set) var windowInteraction: [String: [String: Int]] = [:]
 
     var trusted: Bool { AXIsProcessTrusted() }
     var canMove: Bool { DPCanMove() }
@@ -248,11 +251,14 @@ final class SystemAccess: SystemAccessProtocol {
     }
 
     func setFrame(_ rect: CGRect, windowID: UInt32) -> Bool {
+        windowInteraction["frame"] = ["windowID": Int(windowID), "elementAvailable": elements[windowID] == nil ? 0 : 1]
         guard let element = elements[windowID] else { return false }
         var position = rect.origin, size = rect.size
         guard let p = AXValueCreate(.cgPoint, &position), let s = AXValueCreate(.cgSize, &size) else { return false }
         let resize = AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, s)
         let move = AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, p)
+        windowInteraction["frame"]?["resize"] = Int(resize.rawValue)
+        windowInteraction["frame"]?["position"] = Int(move.rawValue)
         return move == .success && resize == .success
     }
 
@@ -294,16 +300,27 @@ final class SystemAccess: SystemAccessProtocol {
     }
 
     func focusWindow(_ windowID: UInt32) -> Bool {
+        windowInteraction["focus"] = ["windowID": Int(windowID), "elementAvailable": elements[windowID] == nil ? 0 : 1]
         guard let element = elements[windowID] else { return false }
         var pid: pid_t = 0
-        guard AXUIElementGetPid(element, &pid) == .success, let app = NSRunningApplication(processIdentifier: pid) else { return false }
+        let pidResult = AXUIElementGetPid(element, &pid)
+        windowInteraction["focus"]?["pidRead"] = Int(pidResult.rawValue)
+        guard pidResult == .success, let app = NSRunningApplication(processIdentifier: pid) else { return false }
         let root = AXUIElementCreateApplication(pid)
-        _ = AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
-        _ = AXUIElementSetAttributeValue(root, kAXFocusedWindowAttribute as CFString, element)
+        windowInteraction["focus"]?["mainWindow"] = Int(AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue).rawValue)
+        windowInteraction["focus"]?["focusedWindow"] = Int(AXUIElementSetAttributeValue(root, kAXFocusedWindowAttribute as CFString, element).rawValue)
         if app.isHidden { app.unhide() }
-        let activated = app.activate(options: [])
-        _ = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-        let raised = AXUIElementPerformAction(element, kAXRaiseAction as CFString) == .success
+        // A nonactivating picker leaves another app frontmost. LaunchServices
+        // can refuse activate() from that background app even after AXRaise
+        // succeeds. Use the granted Accessibility channel to activate the owner.
+        let activationResult = AXUIElementSetAttributeValue(root, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+        windowInteraction["focus"]?["frontmost"] = Int(activationResult.rawValue)
+        let activated = activationResult == .success
+        windowInteraction["focus"]?["activationAccepted"] = activated ? 1 : 0
+        windowInteraction["focus"]?["focused"] = Int(AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue).rawValue)
+        let raiseResult = AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+        windowInteraction["focus"]?["raise"] = Int(raiseResult.rawValue)
+        let raised = raiseResult == .success
         return activated && raised
     }
 
